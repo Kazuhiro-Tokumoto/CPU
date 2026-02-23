@@ -29,7 +29,6 @@ const FLAGS = {
 // メモリ (1MB = 0x00000 〜 0xFFFFF)
 // ============================================================
 class Memory {
-    data;
     constructor(size = 0x100000) {
         this.data = new Uint8Array(size);
     }
@@ -56,20 +55,22 @@ class Memory {
 // レジスタ
 // ============================================================
 class Registers {
-    ax = 0;
-    bx = 0;
-    cx = 0;
-    dx = 0;
-    si = 0;
-    di = 0;
-    bp = 0;
-    sp = 0xFFFE;
-    cs = 0xF000;
-    ds = 0;
-    es = 0;
-    ss = 0;
-    ip = 0xFFF0;
-    flags = 0x0002;
+    constructor() {
+        this.ax = 0;
+        this.bx = 0;
+        this.cx = 0;
+        this.dx = 0;
+        this.si = 0;
+        this.di = 0;
+        this.bp = 0;
+        this.sp = 0xFFFE;
+        this.cs = 0xF000;
+        this.ds = 0;
+        this.es = 0;
+        this.ss = 0;
+        this.ip = 0xFFF0;
+        this.flags = 0x0002;
+    }
     // 8bit アクセサ
     get al() { return this.ax & 0xFF; }
     get ah() { return (this.ax >> 8) & 0xFF; }
@@ -112,24 +113,39 @@ function decodeModRM(byte) {
 // CPU コア
 // ============================================================
 class CPU8086 {
-    reg;
-    mem;
-    halted = false;
-    waitCycles = 0;
-    // セグメントオーバーライド (null = デフォルト)
-    segOverride = null;
-    // REP/REPNE プレフィックス
-    repPrefix = null;
-    // 割り込みハンドラ
-    interruptHandlers = new Map();
-    // I/Oポートハンドラ
-    ioPortHandlers = new Map();
-    // デバッグ
-    debugLog = [];
-    debugMode = false;
     constructor(mem) {
+        this.halted = false;
+        this.waitCycles = 0;
+        // セグメントオーバーライド (null = デフォルト)
+        this.segOverride = null;
+        // REP/REPNE プレフィックス
+        this.repPrefix = null;
+        // 割り込みハンドラ
+        this.interruptHandlers = new Map();
+        // I/Oポートハンドラ
+        this.ioPortHandlers = new Map();
+        // デバッグ
+        this.debugLog = [];
+        this.debugMode = false;
+        // 最後に計算したEAをキャッシュ (read-modify-writeパターン用)
+        this._lastEA = 0;
+        this._eaCached = false;
+        this._lastStrOpSetsZF = false; // SCAS/CMPSのみZFチェック
+        // ================================================================
+        // BIOS初期化
+        // ================================================================
+        this.biosOutputBuffer = '';
+        this.biosKeyBuffer = [];
+        this.biosVideoMode = 0x03; // 80x25 color text
+        this.biosCursorRow = 0;
+        this.biosCursorCol = 0;
+        this.biosVideoRows = 25;
+        this.biosVideoCols = 80;
+        // VRAM: B800:0000 (80x25 text mode = 4000 bytes)
+        this.VRAM_SEG = 0xB800;
+        this.VRAM_BASE = 0xB8000;
         this.reg = new Registers();
-        this.mem = mem ?? new Memory();
+        this.mem = mem !== null && mem !== void 0 ? mem : new Memory();
     }
     // ============================================================
     // 外部API
@@ -367,9 +383,6 @@ class CPU8086 {
                 break;
         }
     }
-    // 最後に計算したEAをキャッシュ (read-modify-writeパターン用)
-    _lastEA = 0;
-    _eaCached = false;
     // ============================================================
     // ModRM: 実効アドレス計算
     // ============================================================
@@ -652,7 +665,6 @@ class CPU8086 {
         this.repPrefix = null;
         this.segOverride = null;
     }
-    _lastStrOpSetsZF = false; // SCAS/CMPSのみZFチェック
     siDir() { return this.reg.getFlag(FLAGS.DF) ? -1 : 1; }
     // ============================================================
     // メイン: 1命令実行
@@ -2562,7 +2574,7 @@ class CPU8086 {
     // ================================================================
     // 実行
     // ================================================================
-    run(maxSteps = 1_000_000) {
+    run(maxSteps = 1000000) {
         for (let i = 0; i < maxSteps && !this.halted; i++) {
             this.step();
         }
@@ -2575,22 +2587,6 @@ class CPU8086 {
         this.step();
         return { cs, ip, opcode };
     }
-    // ================================================================
-    // BIOS初期化
-    // ================================================================
-    biosOutputBuffer = '';
-    biosKeyBuffer = [];
-    biosVideoMode = 0x03; // 80x25 color text
-    biosCursorRow = 0;
-    biosCursorCol = 0;
-    biosVideoRows = 25;
-    biosVideoCols = 80;
-    // VRAM: B800:0000 (80x25 text mode = 4000 bytes)
-    VRAM_SEG = 0xB800;
-    VRAM_BASE = 0xB8000;
-    // BIOSコールバック（IDE側から受け取る）
-    onBiosOutput;
-    onBiosVideoUpdate;
     // キーボード入力バッファに追加（IDE側から呼ぶ）
     pushKey(scancode, ascii) {
         this.biosKeyBuffer.push((scancode << 8) | ascii);
@@ -2598,6 +2594,7 @@ class CPU8086 {
     getBiosVideoState() {
         return {
             mode: this.biosVideoMode,
+            isGraphics: this.biosVideoMode === 0x13,
             rows: this.biosVideoRows,
             cols: this.biosVideoCols,
             cursorRow: this.biosCursorRow,
@@ -2646,12 +2643,23 @@ class CPU8086 {
         this.registerInterrupt(0x10, () => {
             switch (this.reg.ah) {
                 case 0x00: // Set video mode
-                    this.biosVideoMode = this.reg.al;
+                    this.biosVideoMode = this.reg.al & 0x7F; // bit7=don't clear
                     this.biosCursorRow = 0;
                     this.biosCursorCol = 0;
-                    // Clear VRAM
-                    for (let i = 0; i < 80 * 25; i++) {
-                        this.mem.write16(this.VRAM_BASE + i * 2, 0x0720);
+                    if (this.biosVideoMode === 0x13) {
+                        // Mode 13h: 320x200x256color, VRAM at 0xA0000
+                        for (let i = 0; i < 320 * 200; i++) {
+                            this.mem.write8(0xA0000 + i, 0);
+                        }
+                        if (this.onVideoModeChange) this.onVideoModeChange(0x13);
+                    if (typeof window!=='undefined'&&window._onVideoModeChange) window._onVideoModeChange(0x13);
+                    } else {
+                        // Text mode: clear B8000
+                        for (let i = 0; i < 80 * 25; i++) {
+                            this.mem.write16(this.VRAM_BASE + i * 2, 0x0720);
+                        }
+                        if (this.onVideoModeChange) this.onVideoModeChange(this.biosVideoMode);
+                        if (typeof window!=='undefined'&&window._onVideoModeChange) window._onVideoModeChange(this.biosVideoMode);
                     }
                     break;
                 case 0x01: // Set cursor shape (stub)
@@ -2998,6 +3006,7 @@ class CPU8086 {
         });
         // ── INT 21h: DOS Services (最低限) ──
         this.registerInterrupt(0x21, () => {
+            var _a, _b, _c, _d, _e;
             switch (this.reg.ah) {
                 case 0x01: { // Read char with echo
                     if (this.biosKeyBuffer.length > 0) {
@@ -3007,7 +3016,7 @@ class CPU8086 {
                         const saveAX = this.reg.ax;
                         this.reg.ah = 0x0E;
                         this.reg.al = ch;
-                        this.interruptHandlers.get(0x10)?.();
+                        (_a = this.interruptHandlers.get(0x10)) === null || _a === void 0 ? void 0 : _a();
                         this.reg.ax = saveAX;
                         this.reg.al = ch; // return char in AL
                     }
@@ -3022,7 +3031,7 @@ class CPU8086 {
                     const oldAX = this.reg.ax;
                     this.reg.ah = 0x0E;
                     this.reg.al = ch;
-                    this.interruptHandlers.get(0x10)?.();
+                    (_b = this.interruptHandlers.get(0x10)) === null || _b === void 0 ? void 0 : _b();
                     this.reg.ax = oldAX;
                     break;
                 }
@@ -3041,7 +3050,7 @@ class CPU8086 {
                         const oldAX = this.reg.ax;
                         this.reg.ah = 0x0E;
                         this.reg.al = this.reg.dl;
-                        this.interruptHandlers.get(0x10)?.();
+                        (_c = this.interruptHandlers.get(0x10)) === null || _c === void 0 ? void 0 : _c();
                         this.reg.ax = oldAX;
                     }
                     break;
@@ -3067,7 +3076,7 @@ class CPU8086 {
                         const oldAX = this.reg.ax;
                         this.reg.ah = 0x0E;
                         this.reg.al = ch;
-                        this.interruptHandlers.get(0x10)?.();
+                        (_d = this.interruptHandlers.get(0x10)) === null || _d === void 0 ? void 0 : _d();
                         this.reg.ax = oldAX;
                     }
                     this.reg.al = 0x24;
@@ -3141,7 +3150,7 @@ class CPU8086 {
                             const oldAX = this.reg.ax;
                             this.reg.ah = 0x0E;
                             this.reg.al = ch;
-                            this.interruptHandlers.get(0x10)?.();
+                            (_e = this.interruptHandlers.get(0x10)) === null || _e === void 0 ? void 0 : _e();
                             this.reg.ax = oldAX;
                         }
                         this.reg.ax = this.reg.cx;
@@ -3174,8 +3183,6 @@ class CPU8086 {
             }
         });
     }
-    // ディスク読み込みハンドラ
-    diskReadHandler;
     // ================================================================
     // デバッグ: レジスタダンプ
     // ================================================================

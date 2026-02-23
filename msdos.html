@@ -7,46 +7,45 @@
 @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap');
 *{box-sizing:border-box;margin:0;padding:0;}
 html,body{width:100%;height:100%;background:#000;color:#ccc;font-family:'Share Tech Mono',monospace;overflow:hidden;}
-body::after{content:'';position:fixed;inset:0;background:repeating-linear-gradient(0deg,rgba(0,0,0,.05) 0,rgba(0,0,0,.05) 1px,transparent 1px,transparent 2px);pointer-events:none;z-index:999;}
+body::after{content:'';position:fixed;inset:0;background:repeating-linear-gradient(0deg,rgba(0,0,0,.04) 0,rgba(0,0,0,.04) 1px,transparent 1px,transparent 2px);pointer-events:none;z-index:9999;}
 .layout{display:flex;flex-direction:column;height:100vh;}
-.bar{display:flex;align-items:center;gap:8px;padding:3px 10px;background:#000;border-bottom:1px solid #111;flex-shrink:0;font-size:11px;}
-.bar-logo{color:#666;letter-spacing:3px;font-size:12px;}.bar-logo b{color:#aaa;}
+/* bar */
+.bar{display:flex;align-items:center;gap:6px;padding:3px 10px;background:#000;border-bottom:1px solid #111;flex-shrink:0;font-size:11px;}
+.bar-logo{color:#555;letter-spacing:3px;font-size:12px;}.bar-logo b{color:#999;}
 .bspc{flex:1;}
 .tbtn{padding:2px 8px;border:1px solid #1a1a1a;background:#000;color:#444;font-family:'Share Tech Mono',monospace;font-size:10px;cursor:pointer;transition:all .1s;}
 .tbtn:hover{border-color:#555;color:#aaa;}.tbtn.red:hover{border-color:#700;color:#c33;}
-.main{display:flex;flex:1;overflow:hidden;}
-/* ターミナル — クリックでフォーカス */
-#screen{
-  flex:1;padding:6px 10px;overflow-y:auto;
-  white-space:pre-wrap;word-break:break-all;
-  font-size:13px;line-height:1.45;color:#ccc;
-  background:#000;cursor:text;outline:none;
-  min-width:0;
-}
-#screen:focus{outline:none;}
-/* カーソル点滅 */
+/* main */
+.main{display:flex;flex:1;overflow:hidden;position:relative;}
+/* screen = text terminal */
+#screen{flex:1;padding:6px 10px;overflow-y:auto;white-space:pre-wrap;word-break:break-all;font-size:13px;line-height:1.45;color:#ccc;background:#000;cursor:text;outline:none;min-width:0;}
 #cursor{display:inline-block;width:8px;background:#888;animation:blink .8s step-end infinite;}
 @keyframes blink{0%,100%{opacity:1}50%{opacity:0}}
-/* hidden input — IME対応 */
+/* graphics canvas overlay */
+#gfxCanvas{display:none;position:absolute;top:0;left:0;image-rendering:pixelated;cursor:crosshair;}
+/* hidden input */
 #hi{position:absolute;opacity:0;pointer-events:none;width:1px;height:1px;top:0;left:0;}
-/* サイドパネル */
+/* side */
 .side{width:200px;display:flex;flex-direction:column;background:#000;border-left:1px solid #111;flex-shrink:0;}
 .side-label{padding:2px 8px;font-size:9px;color:#2a2a2a;border-bottom:1px solid #0d0d0d;letter-spacing:1px;}
 .disk-stat{padding:5px 8px;font-size:10px;color:#333;border-bottom:1px solid #0d0d0d;line-height:1.9;}
 .disk-stat span{color:#555;}
 #fileList{flex:1;overflow-y:auto;}
 .fe{display:flex;justify-content:space-between;padding:2px 8px;font-size:11px;color:#333;cursor:pointer;border-bottom:1px solid #050505;transition:background .08s;}
-.fe:hover{background:#0a0a0a;color:#777;}
-.fe .fn{color:#666;}.fe.dir .fn{color:#444;}.fe .fs{font-size:10px;color:#222;}
+.fe:hover{background:#0a0a0a;color:#777;}.fe .fn{color:#666;}.fe.dir .fn{color:#444;}.fe .fs{font-size:10px;color:#222;}
 .side-btns{padding:4px;display:flex;flex-direction:column;gap:3px;border-top:1px solid #0d0d0d;}
 .sbtn{padding:3px 7px;background:#000;border:1px solid #111;color:#333;font-family:'Share Tech Mono',monospace;font-size:10px;cursor:pointer;text-align:left;transition:all .1s;}
 .sbtn:hover{border-color:#444;color:#888;}.sbtn.danger:hover{border-color:#400;color:#a33;}
+/* sbar */
 .sbar{display:flex;align-items:center;gap:12px;padding:2px 10px;background:#000;border-top:1px solid #0d0d0d;font-size:9px;color:#2a2a2a;flex-shrink:0;}
-.sbar span{color:#444;}
-#statusMsg{color:#555;}
+.sbar span{color:#444;}#statusMsg{color:#555;}
+/* scrollbar */
 ::-webkit-scrollbar{width:3px;}::-webkit-scrollbar-track{background:#000;}::-webkit-scrollbar-thumb{background:#111;}
-#dropOverlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.9);border:1px dashed #333;z-index:100;align-items:center;justify-content:center;font-size:14px;color:#444;letter-spacing:3px;}
+/* drop overlay */
+#dropOverlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.9);border:1px dashed #333;z-index:200;align-items:center;justify-content:center;font-size:14px;color:#444;letter-spacing:3px;}
 #dropOverlay.active{display:flex;}
+/* gfx mode badge */
+#gfxBadge{display:none;position:absolute;top:4px;left:4px;font-size:9px;color:#444;letter-spacing:1px;z-index:10;pointer-events:none;}
 </style>
 </head>
 <body>
@@ -57,15 +56,17 @@ body::after{content:'';position:fixed;inset:0;background:repeating-linear-gradie
     <span style="color:#1a1a1a">|</span>
     <span style="color:#2a2a2a;font-size:10px">FAT12 1.44MB</span>
     <div class="bspc"></div>
-    <button class="tbtn" onclick="MSDos.downloadImg()">disk.img</button>
-    <button class="tbtn" onclick="document.getElementById('importInput').click()">import</button>
+    <button class="tbtn" onclick="MSDos.downloadImg()" title="disk.imgをエクスポート">↓ disk.img</button>
+    <button class="tbtn" onclick="importDiskImg()" title="disk.imgをインポート">↑ disk.img</button>
+    <button class="tbtn" onclick="triggerImport()">import</button>
     <button class="tbtn red" onclick="doFormat()">format</button>
-    <input type="file" id="importInput" multiple style="display:none" onchange="importFiles(event)">
+    <input type="file" id="importBin" multiple style="display:none" onchange="importFiles(event)">
+    <input type="file" id="importDiskImg" accept=".img,.ima,.vfd" style="display:none" onchange="loadDiskImg(event)">
   </div>
   <div class="main">
-    <div id="screen" tabindex="0">
-      <span id="screenText"></span><span id="cursor">&nbsp;</span>
-    </div>
+    <pre id="screen" tabindex="0"><span id="screenText"></span><span id="cursor">&nbsp;</span></pre>
+    <canvas id="gfxCanvas"></canvas>
+    <span id="gfxBadge">GFX 320×200×256</span>
     <input id="hi" autocomplete="off" spellcheck="false" autocorrect="off" autocapitalize="none">
     <div class="side">
       <div class="side-label">DISK A:</div>
@@ -80,13 +81,15 @@ body::after{content:'';position:fixed;inset:0;background:repeating-linear-gradie
       <div class="side-btns">
         <button class="sbtn" onclick="refreshUI()">↺ 更新</button>
         <button class="sbtn" onclick="MSDos.downloadImg()">↓ disk.img</button>
-        <button class="sbtn" onclick="document.getElementById('importInput').click()">↑ import</button>
+        <button class="sbtn" onclick="triggerImport()">↑ ファイルimport</button>
+        <button class="sbtn" onclick="importDiskImg()">↑ disk.imgロード</button>
         <button class="sbtn danger" onclick="doFormat()">⚠ format</button>
       </div>
     </div>
   </div>
   <div class="sbar">
     <span id="cwdBar">A:\</span>
+    <span id="videoModeSpan" style="color:#333"></span>
     <div class="bspc"></div>
     <span id="statusMsg"></span>
   </div>
@@ -95,77 +98,72 @@ body::after{content:'';position:fixed;inset:0;background:repeating-linear-gradie
 <script src="./dist/msdos.js"></script>
 <script>
 // ============================================================
-// ターミナルUI — screenTextに直接書く、hi(hidden input)でキー受け取る
+// ターミナルUI
 // ============================================================
 const screenEl   = document.getElementById('screen');
 const screenText = document.getElementById('screenText');
 const hiInput    = document.getElementById('hi');
-let   bufText    = '';          // 画面バッファ
-let   lineInput  = '';          // 現在の入力行
+const gfxCanvas  = document.getElementById('gfxCanvas');
+const gfxCtx     = gfxCanvas.getContext('2d');
+let   bufText    = '';
+let   lineInput  = '';
 let   inExec     = false;
 
-// Terminal実装 (msdos.jsのTerminalを上書き)
+// ScreenTerminal
 class ScreenTerminal {
-  print(s)    { bufText += s;   render(); }
-  println(s='') { bufText += (s||'') + '\n'; render(); }
-  clear()     { bufText = '';   render(); }
+  print(s)      { if(window._cpuRunning)return; bufText+=s; render(); }
+  println(s='') { if(window._cpuRunning)return; bufText+=(s||'')+'\n'; render(); }
+  clear()       { bufText=''; render(); }
 }
 
 function render() {
-  // 画面バッファ + 現在の入力行 + カーソル
-  screenText.textContent = bufText + lineInput;
-  screenEl.scrollTop = screenEl.scrollHeight;
+  if(window._cpuRunning||window._gfxMode) return;
+  const st=document.getElementById('screenText');
+  if(st) st.textContent=bufText+lineInput;
+  screenEl.scrollTop=screenEl.scrollHeight;
 }
 
-// screenをクリックしたらhiにフォーカス
-screenEl.addEventListener('click', () => hiInput.focus());
-screenEl.addEventListener('focus', () => hiInput.focus());
+// focus
+screenEl.addEventListener('click',()=>hiInput.focus());
+screenEl.addEventListener('focus',()=>hiInput.focus());
+gfxCanvas.addEventListener('click',()=>hiInput.focus());
+hiInput.addEventListener('focus',()=>document.getElementById('cursor').style.display='inline-block');
+hiInput.addEventListener('blur', ()=>document.getElementById('cursor').style.display='none');
 
-// hi inputにフォーカスするときカーソル表示
-hiInput.addEventListener('focus',  () => document.getElementById('cursor').style.display='inline-block');
-hiInput.addEventListener('blur',   () => document.getElementById('cursor').style.display='none');
-
+// ============================================================
 // キー入力
+// ============================================================
 hiInput.addEventListener('keydown', e => {
-  // ── EDIT モード ──
-  if(window._editInstance && window._editInstance.active) {
+  // EDIT モード
+  if(window._editInstance&&window._editInstance.active){
     e.preventDefault();
-    window._editInstance.onKey(e.key, e.ctrlKey, e.shiftKey);
+    window._editInstance.onKey(e.key,e.ctrlKey,e.shiftKey);
     return;
   }
-  // ── COPY CON モード ──
-  if(window._copyConInstance && window._copyConInstance.active) {
-    if(e.ctrlKey && (e.key==='z'||e.key==='Z')){
-      e.preventDefault();
-      window._copyConInstance.onCtrlZ();
-      if(window.onDiskChange) window.onDiskChange();
-      return;
-    }
-    if(e.ctrlKey && (e.key==='c'||e.key==='C')){
-      e.preventDefault();
-      window._copyConInstance.onCtrlC();
-      return;
-    }
+  // COPY CON モード
+  if(window._copyConInstance&&window._copyConInstance.active){
+    if(e.ctrlKey&&(e.key==='z'||e.key==='Z')){e.preventDefault();window._copyConInstance.onCtrlZ();if(window.onDiskChange)window.onDiskChange();return;}
+    if(e.ctrlKey&&(e.key==='c'||e.key==='C')){e.preventDefault();window._copyConInstance.onCtrlC();return;}
+    if(e.key==='Enter'){e.preventDefault();const l=lineInput;bufText+=lineInput+'\n';window._copyConInstance.onLine(l);lineInput='';render();return;}
+    if(e.key==='Backspace'){e.preventDefault();if(lineInput.length>0){lineInput=lineInput.slice(0,-1);render();}return;}
+    return;
+  }
+  // DEBUG モード
+  if(window._debugMode){
     if(e.key==='Enter'){
       e.preventDefault();
-      const line=lineInput;
+      const l=lineInput;
       bufText+=lineInput+'\n';
-      window._copyConInstance.onLine(line);
-      lineInput='';
-      render();
+      lineInput='';render();
+      MSDos.shell._debugCmd(l);
       return;
     }
-    if(e.key==='Backspace'){
-      e.preventDefault();
-      if(lineInput.length>0){lineInput=lineInput.slice(0,-1);render();}
-      return;
-    }
-    // printable chars handled by input event below
+    if(e.key==='Backspace'){e.preventDefault();if(lineInput.length>0){lineInput=lineInput.slice(0,-1);render();}return;}
     return;
   }
-  // ── CPU実行中 ──
-  if(window._cpuRunning && window._cpuInstance) {
-    let ascii=0, scan=0;
+  // CPU実行中 → キーをCPUへ
+  if(window._cpuRunning&&window._cpuInstance){
+    let ascii=0,scan=0;
     if(e.key.length===1){ascii=e.key.charCodeAt(0);scan=ascii;}
     else if(e.key==='Enter'){ascii=0x0D;scan=0x1C;}
     else if(e.key==='Backspace'){ascii=0x08;scan=0x0E;}
@@ -174,208 +172,303 @@ hiInput.addEventListener('keydown', e => {
     else if(e.key==='ArrowDown'){scan=0x50;ascii=0;}
     else if(e.key==='ArrowLeft'){scan=0x4B;ascii=0;}
     else if(e.key==='ArrowRight'){scan=0x4D;ascii=0;}
-    if(ascii||scan){
-      window._cpuInstance.pushKey(scan,ascii);
-      window._cpuInstance.halted=false;
-    }
+    if(ascii||scan){window._cpuInstance.pushKey(scan,ascii);window._cpuInstance.halted=false;}
     e.preventDefault();return;
   }
   if(inExec) return;
-  if(e.key === 'Enter') {
+  if(e.key==='Enter'){
     e.preventDefault();
-    const line = lineInput;
-    bufText += lineInput + '\n';
-    lineInput = '';
-    render();
-    inExec = true;
+    const line=lineInput;
+    bufText+=lineInput+'\n';lineInput='';render();
+    inExec=true;
     MSDos.shell.execute(line);
-    inExec = false;
-    if(window.onDiskChange) window.onDiskChange();
-  } else if(e.key === 'Backspace') {
+    inExec=false;
+    if(window.onDiskChange)window.onDiskChange();
+  } else if(e.key==='Backspace'){
     e.preventDefault();
-    if(lineInput.length > 0) { lineInput = lineInput.slice(0,-1); render(); }
-  } else if(e.key === 'ArrowUp') {
+    if(lineInput.length>0){lineInput=lineInput.slice(0,-1);render();}
+  } else if(e.key==='ArrowUp'){
     e.preventDefault();
-    const h = MSDos.shell.history;
-    if(!h.length) return;
-    MSDos.shell.histIdx = Math.min(MSDos.shell.histIdx+1, h.length-1);
-    lineInput = h[MSDos.shell.histIdx];
-    render();
-  } else if(e.key === 'ArrowDown') {
+    const h=MSDos.shell.history;if(!h.length)return;
+    MSDos.shell.histIdx=Math.min(MSDos.shell.histIdx+1,h.length-1);
+    lineInput=h[MSDos.shell.histIdx];render();
+  } else if(e.key==='ArrowDown'){
     e.preventDefault();
-    MSDos.shell.histIdx = Math.max(MSDos.shell.histIdx-1, -1);
-    lineInput = MSDos.shell.histIdx < 0 ? '' : MSDos.shell.history[MSDos.shell.histIdx];
-    render();
-  } else if(e.key === 'Tab') {
-    e.preventDefault();
-    tabComplete();
-  } else if(e.ctrlKey && e.key === 'c') {
-    bufText += '^C\n';
-    lineInput = '';
-    render();
-    MSDos.shell.prompt();
+    MSDos.shell.histIdx=Math.max(MSDos.shell.histIdx-1,-1);
+    lineInput=MSDos.shell.histIdx<0?'':MSDos.shell.history[MSDos.shell.histIdx];render();
+  } else if(e.key==='Tab'){
+    e.preventDefault();tabComplete();
+  } else if(e.ctrlKey&&e.key==='c'){
+    bufText+='^C\n';lineInput='';render();MSDos.shell.prompt();
   }
 });
 
-// printable文字 (IME経由も含む)
-hiInput.addEventListener('input', e => {
-  const v = hiInput.value;
-  if(v) {
-    // EDITモードではonKeyに文字を渡す
-    if(window._editInstance && window._editInstance.active) {
-      for(const ch of v) window._editInstance.onKey(ch, false, false);
-      hiInput.value='';
-      return;
-    }
-    lineInput += v;
-    hiInput.value = '';
-    render();
+hiInput.addEventListener('input', e=>{
+  // CPU実行中・DEBUG中はIME無視
+  if(window._cpuRunning||window._debugMode){hiInput.value='';return;}
+  if(window._editInstance&&window._editInstance.active){
+    for(const ch of hiInput.value) window._editInstance.onKey(ch,false,false);
+    hiInput.value='';return;
   }
+  const v=hiInput.value;
+  if(v){lineInput+=v;hiInput.value='';render();}
 });
 
-function tabComplete() {
-  const parts = lineInput.split(/\s+/);
-  const last  = parts[parts.length-1];
-  if(!last) return;
-  const entries = MSDos.disk.listDir(MSDos.shell.cwdParts)||[];
-  const matches = entries.filter(e => e.name.toUpperCase().startsWith(last.toUpperCase()));
-  if(matches.length === 1) {
-    parts[parts.length-1] = matches[0].name;
-    lineInput = parts.join(' ');
-    render();
-  } else if(matches.length > 1) {
-    bufText += '\n' + matches.map(m=>m.name.padEnd(14)).join('') + '\n';
-    MSDos.shell.prompt();
+function tabComplete(){
+  const parts=lineInput.split(/\s+/);
+  const last=parts[parts.length-1];if(!last)return;
+  const entries=MSDos.disk.listDir(MSDos.shell.cwdParts)||[];
+  const matches=entries.filter(e=>e.name.toUpperCase().startsWith(last.toUpperCase()));
+  if(matches.length===1){parts[parts.length-1]=matches[0].name;lineInput=parts.join(' ');render();}
+  else if(matches.length>1){bufText+='\n'+matches.map(m=>m.name.padEnd(14)).join('')+'\n';MSDos.shell.prompt();}
+}
+
+// ============================================================
+// グラフィックモード (Mode 13h: 320x200x256色)
+// ============================================================
+window._gfxMode = false;
+
+// DOS256色パレット (VGA標準)
+const VGA_PALETTE = (() => {
+  const p = new Uint8Array(256*3);
+  // 0-15: EGA色
+  const ega = [
+    0,0,0, 0,0,170, 0,170,0, 0,170,170,
+    170,0,0, 170,0,170, 170,85,0, 170,170,170,
+    85,85,85, 85,85,255, 85,255,85, 85,255,255,
+    255,85,85, 255,85,255, 255,255,85, 255,255,255
+  ];
+  for(let i=0;i<16;i++){p[i*3]=ega[i*3];p[i*3+1]=ega[i*3+1];p[i*3+2]=ega[i*3+2];}
+  // 16-231: 6x6x6カラーキューブ
+  for(let i=0;i<216;i++){
+    const r=Math.floor(i/36)*51, g=Math.floor((i%36)/6)*51, b=(i%6)*51;
+    p[(i+16)*3]=r;p[(i+16)*3+1]=g;p[(i+16)*3+2]=b;
   }
+  // 232-255: グレースケール
+  for(let i=0;i<24;i++){const v=i*10+8;p[(i+232)*3]=v;p[(i+232)*3+1]=v;p[(i+232)*3+2]=v;}
+  return p;
+})();
+
+function renderGFX() {
+  if(!window._cpuMem||!window._gfxMode) return;
+  const mem = window._cpuMem;
+  const GFX = 0xA0000;
+  const W=320, H=200;
+  const imgData = gfxCtx.createImageData(W, H);
+  const px = imgData.data;
+  for(let i=0;i<W*H;i++){
+    const ci = mem.read8(GFX+i);
+    px[i*4]   = VGA_PALETTE[ci*3];
+    px[i*4+1] = VGA_PALETTE[ci*3+1];
+    px[i*4+2] = VGA_PALETTE[ci*3+2];
+    px[i*4+3] = 255;
+  }
+  gfxCtx.putImageData(imgData, 0, 0);
+}
+
+function enterGFXMode() {
+  window._gfxMode = true;
+  // canvasサイズ設定
+  const mainEl = document.querySelector('.main');
+  const tw = mainEl.clientWidth - 200; // side panel
+  const th = mainEl.clientHeight;
+  const scale = Math.min(Math.floor(tw/320), Math.floor(th/200)) || 1;
+  gfxCanvas.width  = 320;
+  gfxCanvas.height = 200;
+  gfxCanvas.style.width  = (320*scale)+'px';
+  gfxCanvas.style.height = (200*scale)+'px';
+  gfxCanvas.style.display = 'block';
+  gfxCanvas.style.top = Math.floor((th - 200*scale)/2)+'px';
+  gfxCanvas.style.left= Math.floor((tw - 320*scale)/2)+'px';
+  document.getElementById('screen').style.visibility='hidden';
+  document.getElementById('gfxBadge').style.display='block';
+  document.getElementById('videoModeSpan').textContent='MODE 13h 320×200×256';
+  hiInput.focus();
+}
+
+function exitGFXMode() {
+  window._gfxMode = false;
+  gfxCanvas.style.display='none';
+  document.getElementById('screen').style.visibility='visible';
+  document.getElementById('gfxBadge').style.display='none';
+  document.getElementById('videoModeSpan').textContent='';
+  const st=document.getElementById('screenText');
+  if(st) st.textContent=bufText;
+  screenEl.scrollTop=screenEl.scrollHeight;
+}
+
+// テキストモードレンダリング (VRAM 0xB8000)
+function renderTextVRAM() {
+  if(!window._cpuMem) return;
+  const mem=window._cpuMem;
+  const VRAM=0xB8000,COLS=80,ROWS=25;
+  let text='';
+  for(let row=0;row<ROWS;row++){
+    let line='',lastNS=-1;
+    for(let col=0;col<COLS;col++){const ch=mem.read8(VRAM+(row*COLS+col)*2);if(ch>0x20&&ch<0x7F)lastNS=col;}
+    for(let col=0;col<=lastNS;col++){const ch=mem.read8(VRAM+(row*COLS+col)*2);line+=(ch>=0x20&&ch<0x7F)?String.fromCharCode(ch):' ';}
+    text+=line;if(row<ROWS-1)text+='\n';
+  }
+  const st=document.getElementById('screenText');
+  if(st)st.textContent=text;
+  screenEl.scrollTop=screenEl.scrollHeight;
 }
 
 // ============================================================
 // 初期化
 // ============================================================
-window.addEventListener('DOMContentLoaded', () => {
-  // MSDos.termをScreenTerminalに差し替え
+window.addEventListener('DOMContentLoaded', ()=>{
   const fakeTerm = new ScreenTerminal();
   window.onDiskChange = refreshUI;
 
-  // MSDos.initの代わりに直接セットアップ
   MSDos.term  = fakeTerm;
   MSDos.disk  = new FAT12Disk();
-  if(!MSDos.disk.isFormatted()) {
-    MSDos.disk.format();
-    fakeTerm.println('[新しいディスクをフォーマットしました]');
-  } else {
-    fakeTerm.println('[ディスクをlocalStorageから読み込みました]');
-  }
+  if(!MSDos.disk.isFormatted()){MSDos.disk.format();fakeTerm.println('[新しいディスクをフォーマットしました]');}
+  else fakeTerm.println('[ディスクをlocalStorageから読み込みました]');
   MSDos.shell = new DOSShell(MSDos.disk, fakeTerm);
   MSDos.shell.start();
-
   refreshUI();
   hiInput.focus();
 
   // EDITレンダリング
-  window._editRender = function(text, cursorRow, cursorCol) {
-    screenText.textContent = text;
-    screenEl.scrollTop = 0; // EDITは固定画面
+  window._editRender=(text)=>{const st=document.getElementById('screenText');if(st)st.textContent=text;};
+  window._editExit=()=>{const st=document.getElementById('screenText');if(st)st.textContent=bufText+lineInput;};
+
+  // DEBUGモード: promptとexec
+  window._debugPrompt=()=>{ bufText+='-'; render(); };
+  window._debugExec=(l)=>{ MSDos.shell._debugCmd(l); };
+
+  // VRAMレンダリング (テキスト or グラフィック)
+  window.renderVRAM = ()=>{
+    if(window._gfxMode) renderGFX();
+    else renderTextVRAM();
   };
 
-  // EDIT終了
-  window._editExit = function() {
-    // バッファを復帰
-    screenText.textContent = bufText + lineInput;
-    screenEl.scrollTop = screenEl.scrollHeight;
+  // グラフィックモード切り替えコールバック (cpu8086.jsから呼ばれる)
+  window._onVideoModeChange = (mode)=>{
+    if(mode===0x13) enterGFXMode();
+    else if(window._gfxMode) exitGFXMode();
   };
 
-  // VRAMレンダリングモード
-  let _vramMode = false;
-  let _savedBuf = '';
-
-  window.renderVRAM = function() {
-    if(!window._cpuMem) return;
-    const mem=window._cpuMem;
-    const VRAM=0xB8000, COLS=80, ROWS=25;
-    let text='';
-    for(let row=0;row<ROWS;row++){
-      for(let col=0;col<COLS;col++){
-        const addr=VRAM+(row*COLS+col)*2;
-        const ch=mem.read8(addr);
-        text+=(ch>=0x20&&ch<0x7F)?String.fromCharCode(ch):' ';
-      }
-      if(row<ROWS-1)text+='\n';
-    }
-    // VRAMモード中はbufTextをVRAM内容で上書き
-    screenText.textContent=text;
+  // exitVRAMMode (テキストモード復帰)
+  window.exitVRAMMode=()=>{
+    if(window._gfxMode) exitGFXMode();
+    const st=document.getElementById('screenText');
+    if(st)st.textContent=bufText;
     screenEl.scrollTop=screenEl.scrollHeight;
   };
 
-  window.exitVRAMMode = function() {
-    // VRAMモード終了 → バッファ復帰
-    screenText.textContent=bufText;
-    screenEl.scrollTop=screenEl.scrollHeight;
-  };
-
-  setInterval(() => {
-    const c = MSDos.shell ? MSDos.shell.cwdStr() : 'A:\\';
-    document.getElementById('cwdBar').textContent = c;
-    document.getElementById('cwdLabel').textContent = MSDos.shell.cwdParts.join('\\');
-  }, 200);
+  setInterval(()=>{
+    const c=MSDos.shell?MSDos.shell.cwdStr():'A:\\';
+    document.getElementById('cwdBar').textContent=c;
+    document.getElementById('cwdLabel').textContent=MSDos.shell?MSDos.shell.cwdParts.join('\\'):'';
+  },200);
 });
 
 // ============================================================
-// サイドパネル
+// サイドパネル / ファイル操作
 // ============================================================
-function refreshUI() {
+function refreshUI(){
   if(!MSDos.disk||!MSDos.shell) return;
-  const entries = MSDos.disk.listDir(MSDos.shell.cwdParts)||[];
-  const el = document.getElementById('fileList');
-  if(!entries.length) {
-    el.innerHTML = '<div class="fe" style="cursor:default;color:#1a1a1a">（空）</div>';
-  } else {
-    el.innerHTML = entries.map(e => {
-      const isDir = e.attr & 0x10;
-      const label = isDir ? '['+e.name+']' : e.name;
-      const size  = isDir ? 'DIR' : e.size+'B';
-      const act   = isDir ? `sendCmd('CD ${e.name}')` : `sendCmd('TYPE ${e.name}')`;
+  const entries=MSDos.disk.listDir(MSDos.shell.cwdParts)||[];
+  const el=document.getElementById('fileList');
+  if(!entries.length){el.innerHTML='<div class="fe" style="cursor:default;color:#1a1a1a">（空）</div>';}
+  else{
+    el.innerHTML=entries.map(e=>{
+      const isDir=e.attr&0x10;
+      const label=isDir?'['+e.name+']':e.name;
+      const size=isDir?'DIR':e.size+'B';
+      const act=isDir?`sendCmd('CD ${e.name}')`:`sendCmd('TYPE ${e.name}')`;
       return `<div class="fe${isDir?' dir':''}" onclick="${act}"><span class="fn">${label}</span><span class="fs">${size}</span></div>`;
     }).join('');
   }
-  const free = MSDos.disk.freeClusters()*512;
-  document.getElementById('freeBytes').textContent = free.toLocaleString()+'B';
-  document.getElementById('fileCount').textContent = entries.filter(e=>!(e.attr&0x10)).length;
+  const free=MSDos.disk.freeClusters()*512;
+  document.getElementById('freeBytes').textContent=free.toLocaleString()+'B';
+  document.getElementById('fileCount').textContent=entries.filter(e=>!(e.attr&0x10)).length;
 }
 
-function sendCmd(cmd) {
-  lineInput = cmd;
-  render();
+function sendCmd(cmd){
+  bufText+=cmd+'\n';lineInput='';render();
+  MSDos.shell.execute(cmd);refreshUI();
   hiInput.focus();
-  // Enterを自動送信
-  bufText += lineInput + '\n';
-  lineInput = '';
-  render();
-  MSDos.shell.execute(cmd);
-  refreshUI();
 }
 
-function doFormat() {
+function doFormat(){
   if(!confirm('FORMAT: 全データが削除されます。続行しますか？')) return;
-  MSDos.format();
-  refreshUI();
-  setStatus('FORMAT 完了');
+  MSDos.format();refreshUI();setStatus('FORMAT 完了');
 }
 
-function importFiles(e) {
+function triggerImport(){
+  document.getElementById('importBin').click();
+}
+function importDiskImg(){
+  document.getElementById('importDiskImg').click();
+}
+
+function loadDiskImg(e){
+  const file = e.target.files[0];
+  if(!file){ return; }
+  const r = new FileReader();
+  r.onload = ev => {
+    const bytes = new Uint8Array(ev.target.result);
+    if(bytes.length < 512){ setStatus('不正なimgファイル'); return; }
+
+    // 1. ディスクを全消去してバイトを書き込む
+    MSDos.disk.wipeStorage();
+    MSDos.disk._cache = {};
+    MSDos.disk._dirty = new Set();
+
+    const sectors = Math.min(Math.floor(bytes.length / 512), MSDos.disk.TOTAL_SECTORS);
+    for(let n = 0; n < sectors; n++){
+      const sec = MSDos.disk._sec(n);
+      for(let i = 0; i < 512; i++) sec[i] = bytes[n*512+i];
+      MSDos.disk._dirty.add(n);
+    }
+    MSDos.disk.flush();
+
+    // 2. シェルを再起動（再起動演出）
+    bufText = '';
+    lineInput = '';
+    render();
+
+    const term = MSDos.term;
+    term.println('');
+    term.println('disk.img をロードしました: ' + file.name);
+    term.println('(' + bytes.length.toLocaleString() + ' bytes, ' + sectors + ' sectors)');
+    term.println('');
+    term.println('システムを再起動しています...');
+
+    setTimeout(() => {
+      bufText = '';
+      lineInput = '';
+      // shellを新しく作り直す
+      MSDos.shell = new DOSShell(MSDos.disk, term);
+      MSDos.shell.start();
+      refreshUI();
+      hiInput.focus();
+      setStatus('disk.imgロード完了');
+    }, 800);
+  };
+  r.readAsArrayBuffer(file);
+  e.target.value = '';
+}
+
+function importFiles(e, type){
   importFileList(Array.from(e.target.files));
   e.target.value='';
 }
 
-function importFileList(files) {
+function importFileList(files){
   let count=0;
-  const proms = files.map(f => new Promise(res => {
-    const r = new FileReader();
-    r.onload = ev => {
-      const bytes = new Uint8Array(ev.target.result);
-      const result = MSDos.importFile(f.name, bytes);
-      if(result===true) {
-        MSDos.term.println(`[インポート: ${f.name.toUpperCase()} (${bytes.length}B) → A:\\]`);
+  const proms=files.map(f=>new Promise(res=>{
+    const r=new FileReader();
+    r.onload=ev=>{
+      const bytes=new Uint8Array(ev.target.result);
+      // 画像インポートの場合: ファイル名をそのままディスクに保存
+      const saveName = f.name.toUpperCase().replace(/[^A-Z0-9._]/g,'_').slice(0,12);
+      const result=MSDos.importFile(saveName, bytes);
+      if(result===true){
+        MSDos.term.println(`[インポート: ${saveName} (${bytes.length}B) → A:\\]`);
         count++;
       } else {
         MSDos.term.println(`[エラー: ${f.name} - ${result}]`);
@@ -384,14 +477,14 @@ function importFileList(files) {
     };
     r.readAsArrayBuffer(f);
   }));
-  Promise.all(proms).then(() => {
-    MSDos.shell.prompt(); refreshUI();
+  Promise.all(proms).then(()=>{
+    MSDos.shell.prompt();refreshUI();
     setStatus(`${count}ファイルをインポート`);
     hiInput.focus();
   });
 }
 
-function setStatus(msg) {
+function setStatus(msg){
   document.getElementById('statusMsg').textContent=msg;
   setTimeout(()=>document.getElementById('statusMsg').textContent='',3000);
 }
@@ -408,7 +501,7 @@ window.addEventListener('message',e=>{
   if(e.data&&e.data.type==='save_com'){
     const{name,bytes}=e.data;
     const r=MSDos.saveCom(name,bytes);
-    if(r===true){refreshUI();setStatus('受信: '+name);MSDos.term.println(`[${name} → A:\\ (${bytes.length}B)]`);MSDos.shell.prompt();}
+    if(r===true){refreshUI();setStatus('受信: '+name);MSDos.term.println(`[${name}→A:\\ (${bytes.length}B)]`);MSDos.shell.prompt();}
     else setStatus('エラー: '+r);
   }
 });

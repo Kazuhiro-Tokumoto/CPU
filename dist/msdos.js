@@ -1112,16 +1112,69 @@ class DOSShell {
   }
 
   _mem() {
-    this.term.println('メモリタイプ             合計      使用済み      空き');
-    this.term.println('------------------- -------- ------------ --------');
-    this.term.println('通常メモリ            655,360            0   655,360');
-    this.term.println('上位メモリ                  0            0         0');
-    this.term.println('');
-    this.term.println('合計メモリ            655,360            0   655,360');
-    this.term.println('');
-    this.term.println('最大の実行可能プログラム サイズ: 655,360 (640K)');
-  }
+    const KB = 1024;
+    const CONV_TOTAL = 640 * KB;
+    const VIDEO_SIZE = 128 * KB;
+    const BIOS_SIZE  = 256 * KB;
+    const TOTAL_MEM  = 1024 * KB;
+    const OS_FIXED   = 0x500 + 0x1000 + 0x100;
 
+    const progSize  = window._lastExecSize || 0;
+    const progName  = window._lastExecName || '';
+    const isRunning = !!(window._cpuRunning && window._cpuInstance);
+
+    // 実際のCPUメモリから使用ページをカウント
+    let cpuMemUsed = 0;
+    if (window._cpuMem && window._cpuMem.data) {
+      const data = window._cpuMem.data;
+      for (let addr = 0x500; addr < 0xA0000; addr += 512) {
+        for (let i = 0; i < 512; i++) {
+          if (data[addr + i] !== 0) { cpuMemUsed += 512; break; }
+        }
+      }
+    }
+
+    const convUsed = cpuMemUsed > 0 ? cpuMemUsed : (OS_FIXED + progSize);
+    const convFree = CONV_TOTAL - convUsed;
+
+    const freeClusters  = this.disk.freeClusters();
+    const totalClusters = Math.floor(this.disk.SECTORS_PER_FAT * 512 * 2 / 3) - 2;
+    const usedClusters  = totalClusters - freeClusters;
+    const diskTotal = this.disk.TOTAL_SECTORS * 512;
+    const diskUsed  = usedClusters * 512;
+    const diskFree  = freeClusters * 512;
+
+    const f  = (n) => n.toLocaleString().padStart(10);
+    const fl = (s) => s.padEnd(22);
+
+    this.term.println('');
+    this.term.println('メモリタイプ                合計      使用済み        空き');
+    this.term.println('---------------------- ---------- ---------- ----------');
+    this.term.println(fl('通常メモリ (Conv)') + f(CONV_TOTAL) + f(convUsed) + f(convFree));
+    this.term.println(fl('ビデオメモリ')       + f(VIDEO_SIZE) + f(VIDEO_SIZE) + f(0));
+    this.term.println(fl('ROM/BIOSエリア')     + f(BIOS_SIZE)  + f(BIOS_SIZE)  + f(0));
+    this.term.println('---------------------- ---------- ---------- ----------');
+    this.term.println(fl('合計 (1MB空間)')     + f(TOTAL_MEM)  + f(convUsed + VIDEO_SIZE + BIOS_SIZE) + f(convFree));
+    this.term.println('');
+    this.term.println('通常メモリ内訳:');
+    this.term.println('  IVT+BDA+BIOSスタブ     : ' + OS_FIXED.toLocaleString().padStart(7) + ' bytes');
+    if (progSize > 0) {
+      this.term.println('  ' + (progName||'プログラム').padEnd(22) + ' : ' + progSize.toLocaleString().padStart(7) + ' bytes' + (isRunning ? '  [実行中]' : ''));
+      if (isRunning && window._cpuInstance) {
+        const vs = window._cpuInstance.getBiosVideoState();
+        const modeStr = vs.mode === 0x13 ? 'グラフィック 320x200x256' : 'テキスト 80x25';
+        this.term.println('  ビデオモード           : Mode ' + vs.mode.toString(16).toUpperCase() + 'h (' + modeStr + ')');
+      }
+    }
+    this.term.println('  空き                   : ' + convFree.toLocaleString().padStart(7) + ' bytes');
+    this.term.println('');
+    this.term.println('ディスク A: (FAT12 1.44MB):');
+    this.term.println('  合計 : ' + diskTotal.toLocaleString().padStart(10) + ' bytes');
+    this.term.println('  使用 : ' + diskUsed.toLocaleString().padStart(10) + ' bytes  (' + usedClusters + ' clusters)');
+    this.term.println('  空き : ' + diskFree.toLocaleString().padStart(10) + ' bytes  (' + freeClusters + ' clusters)');
+    this.term.println('');
+    this.term.println('最大実行可能プログラムサイズ: ' + convFree.toLocaleString() + ' bytes (' + Math.floor(convFree/1024) + 'K)');
+  }
   _if(args) {
     const raw = args.join(' ');
     const m = raw.match(/^EXIST\s+(\S+)\s+(.+)$/i);
@@ -1303,6 +1356,8 @@ class DOSShell {
   _execCOM(fn, data) {
     if (window._cpuRunning) { this.term.println('既に実行中です'); return; }
     this.term.println('実行: ' + fn + ' (' + data.length + 'B)');
+    window._lastExecName = fn;
+    window._lastExecSize = data.length;
     try {
       const mem = new Memory();
       const cpu = new CPU8086(mem);
@@ -1317,6 +1372,9 @@ class DOSShell {
       window._cpuMem = mem;
       window._cpuRunning = true;
       cpu.onBiosOutput = () => {};
+      cpu.onVideoModeChange = (mode) => {
+        if (window._onVideoModeChange) window._onVideoModeChange(mode);
+      };
       const CYCLES_PER_TICK = 100000;
       const tick = () => {
         if (!window._cpuRunning) return;
