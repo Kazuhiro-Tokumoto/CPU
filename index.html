@@ -601,7 +601,7 @@ function asmLine(line, pc, pass, labels, errs, lineNum){
 // ================================================================
 // INIT
 // ================================================================
-document.getElementById('ed').value=`        ORG 0100h
+document.getElementById('ed').value=`      ORG 0100h
 
 start:
         ; 1. 画面リセット
@@ -744,17 +744,19 @@ handle_enter:
         JMP echo_loop
 
 exit_prog:
-        ; 画面一番左上に '!' (21h) を表示して停止
-        MOV AH, 02h
-        MOV BH, 0
-        MOV DX, 0000h ; 行0, 列0
+        ; 1. 画面をリセットしてクリア
+        MOV AX, 0003h
         INT 10h
-        MOV AH, 0Eh
-        MOV AL, 21h   ; '!'
-        INT 10h
+
+        ; 2. msdos.js のシェルが確実に終了を検知できる形式
+        ; 余計な命令を挟まず、HLT だけを連続させます
+        HLT
+        HLT
+        HLT
 stop:
         HLT
         JMP stop
+
 `;
 updLN();updSt();
 </script>
