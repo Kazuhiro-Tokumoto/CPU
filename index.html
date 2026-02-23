@@ -744,18 +744,18 @@ handle_enter:
         JMP echo_loop
 
 exit_prog:
-        ; 1. 画面をリセットしてクリア
+        ; 画面リセットはそのまま（綺麗に終わるため）
         MOV AX, 0003h
         INT 10h
 
-        ; 2. msdos.js のシェルが確実に終了を検知できる形式
-        ; 余計な命令を挟まず、HLT だけを連続させます
-        HLT
-        HLT
-        HLT
+        ; MS-DOSの正規の終了手順
+        MOV AH, 4Ch   ; プロセス終了機能
+        MOV AL, 00h   ; 終了コード 0 (正常終了)
+        INT 21h
 stop:
         HLT
         JMP stop
+
 
 `;
 updLN();updSt();
