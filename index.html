@@ -61,6 +61,8 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);hei
   <button class="btn btn-p" onclick="assemble()">▶ Assemble</button>
   <button class="btn btn-p" onclick="runCPU()">⚙ Run</button>
   <button class="btn btn-r" id="btnStop" onclick="stopCPU()" style="display:none">■ Stop</button>
+  <button class="btn" onclick="saveCom()">💾 Save .com</button>
+  <button class="btn" onclick="openDOS()" title="msdos.htmlを別ウィンドウで開く">🖥 DOS</button>
   <button class="btn" onclick="clearAll()">✕</button>
   <button class="btn" onclick="runSelfTest()">🧪</button>
 </div>
@@ -349,6 +351,26 @@ function clearAll(){
   clearLog();document.getElementById('bcount').textContent='0 bytes';
   document.getElementById('cpuStatus').textContent='—';
   updLN();
+}
+
+function saveCom(){
+  if(!asmBytes||!asmBytes.length){log('先にAssembleしてください','warn');return;}
+  // バイナリダウンロード
+  const blob=new Blob([asmBytes],{type:'application/octet-stream'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.download='program.com'; a.href=url; a.click();
+  URL.revokeObjectURL(url);
+  log(`${asmBytes.length} bytes → program.com`,'ok');
+  // msdos.htmlが開いていれば転送
+  if(window.dosWin&&!window.dosWin.closed){
+    window.dosWin.postMessage({type:'save_com',name:'PROGRAM.COM',bytes:Array.from(asmBytes)},'*');
+    log('→ msdos.html にも転送しました','ok');
+  }
+}
+
+function openDOS(){
+  window.dosWin=window.open('./msdos.html','msdos','width=960,height=640');
 }
 </script>
 
