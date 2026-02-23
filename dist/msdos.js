@@ -1798,7 +1798,7 @@ class DOSShell {
         if (window.renderVRAM) window.renderVRAM();
         if (cpu.halted) {
           const reason = cpu.haltReason || '';
-          if (reason === 'program_exit' || reason === 'hlt') {
+          if (reason === 'program_exit') {
             // Flush all open file handles
             for (const [h, entry] of dosIO.handles) {
               if (entry.modified && entry.buf) {
@@ -1815,7 +1815,12 @@ class DOSShell {
             if (window.onDiskChange) window.onDiskChange();
             return;
           }
-          if (reason === 'key_wait') { /* continue */ }
+          if (reason === 'key_wait') { /* continue, wait for key */ }
+          else if (reason === 'hlt') {
+            // HLT = wait for next interrupt, auto-resume on next frame
+            cpu.halted = false;
+            cpu.haltReason = '';
+          }
           else {
             window._cpuRunning = false;
             window._cpuInstance = null;

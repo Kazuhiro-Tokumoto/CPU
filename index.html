@@ -301,7 +301,14 @@ function runFrame(){
       runTimer=requestAnimationFrame(runFrame);
       return;
     }
-    // 本当のHLT or プログラム終了
+    if(reason==='hlt'){
+      // HLT = 次の割り込みまで待機、自動復帰
+      cpu.halted=false;
+      cpu.haltReason='';
+      runTimer=requestAnimationFrame(runFrame);
+      return;
+    }
+    // program_exit or unknown → stop
     running=false;
     document.getElementById('btnStop').style.display='none';
     renderCRT();
