@@ -1,12 +1,17 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "module": "Node16",
-    "moduleResolution": "Node16",
+    "module": "ESNext",         // Node16から変更（ブラウザ向け）
+    "moduleResolution": "bundler", // または "node"
     "outDir": "./dist",
     "rootDir": "./src",
     "lib": ["ES2022", "DOM"],
-    "esModuleInterop": true
+    "esModuleInterop": true,
+    
+    // --- ここが重要 ---
+    "moduleDetection": "auto",     // forceから変更（重要）
+    "isolatedModules": false,      // falseに設定
+    "verbatimModuleSyntax": false  // trueだとモジュール扱いを強制しやすいため
   },
   "include": ["src/**/*"]
 }

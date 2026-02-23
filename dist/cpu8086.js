@@ -3675,4 +3675,3 @@ function selfTest() {
     });
     return { groups, totalPass, totalFail };
 }
-
