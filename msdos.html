@@ -127,6 +127,43 @@ hiInput.addEventListener('blur',   () => document.getElementById('cursor').style
 
 // キー入力
 hiInput.addEventListener('keydown', e => {
+  // ── EDIT モード ──
+  if(window._editInstance && window._editInstance.active) {
+    e.preventDefault();
+    window._editInstance.onKey(e.key, e.ctrlKey, e.shiftKey);
+    return;
+  }
+  // ── COPY CON モード ──
+  if(window._copyConInstance && window._copyConInstance.active) {
+    if(e.ctrlKey && (e.key==='z'||e.key==='Z')){
+      e.preventDefault();
+      window._copyConInstance.onCtrlZ();
+      if(window.onDiskChange) window.onDiskChange();
+      return;
+    }
+    if(e.ctrlKey && (e.key==='c'||e.key==='C')){
+      e.preventDefault();
+      window._copyConInstance.onCtrlC();
+      return;
+    }
+    if(e.key==='Enter'){
+      e.preventDefault();
+      const line=lineInput;
+      bufText+=lineInput+'\n';
+      window._copyConInstance.onLine(line);
+      lineInput='';
+      render();
+      return;
+    }
+    if(e.key==='Backspace'){
+      e.preventDefault();
+      if(lineInput.length>0){lineInput=lineInput.slice(0,-1);render();}
+      return;
+    }
+    // printable chars handled by input event below
+    return;
+  }
+  // ── CPU実行中 ──
   if(window._cpuRunning && window._cpuInstance) {
     let ascii=0, scan=0;
     if(e.key.length===1){ascii=e.key.charCodeAt(0);scan=ascii;}
@@ -139,7 +176,7 @@ hiInput.addEventListener('keydown', e => {
     else if(e.key==='ArrowRight'){scan=0x4D;ascii=0;}
     if(ascii||scan){
       window._cpuInstance.pushKey(scan,ascii);
-      window._cpuInstance.halted=false; // キー待ち解除
+      window._cpuInstance.halted=false;
     }
     e.preventDefault();return;
   }
@@ -184,6 +221,12 @@ hiInput.addEventListener('keydown', e => {
 hiInput.addEventListener('input', e => {
   const v = hiInput.value;
   if(v) {
+    // EDITモードではonKeyに文字を渡す
+    if(window._editInstance && window._editInstance.active) {
+      for(const ch of v) window._editInstance.onKey(ch, false, false);
+      hiInput.value='';
+      return;
+    }
     lineInput += v;
     hiInput.value = '';
     render();
@@ -228,6 +271,19 @@ window.addEventListener('DOMContentLoaded', () => {
 
   refreshUI();
   hiInput.focus();
+
+  // EDITレンダリング
+  window._editRender = function(text, cursorRow, cursorCol) {
+    screenText.textContent = text;
+    screenEl.scrollTop = 0; // EDITは固定画面
+  };
+
+  // EDIT終了
+  window._editExit = function() {
+    // バッファを復帰
+    screenText.textContent = bufText + lineInput;
+    screenEl.scrollTop = screenEl.scrollHeight;
+  };
 
   // VRAMレンダリングモード
   let _vramMode = false;
