@@ -1,0 +1,609 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ASM8086 IDE</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&family=DM+Sans:wght@300;400;500;600&display=swap');
+:root{--bg:#f8f7f4;--bg2:#f0ede8;--panel:#fff;--border:#e2ddd8;--acc:#1a6b3c;--acc2:#1a4b8c;--acc3:#c0392b;--text:#1c1a18;--text2:#4a4540;--text3:#8a8480;--lbl:#8b2d6b;--num:#7b4d00;--cmt:#9a9590;}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);height:100vh;display:flex;flex-direction:column;overflow:hidden;font-size:13px;}
+.hdr{display:flex;align-items:center;gap:6px;padding:5px 10px;background:var(--panel);border-bottom:1px solid var(--border);flex-shrink:0;}
+.hdr h1{font-family:'JetBrains Mono',monospace;font-size:13px;font-weight:500;margin-right:6px;}
+.hdr h1 b{color:var(--acc);}
+.btn{padding:3px 10px;border:1px solid var(--border);border-radius:4px;background:var(--panel);cursor:pointer;font-family:'DM Sans';font-size:11px;color:var(--text2);transition:all .12s;}
+.btn:hover{border-color:var(--acc);color:var(--acc);}
+.btn-p{background:var(--acc);color:#fff;border-color:var(--acc);}
+.btn-p:hover{background:#15572f;}
+.btn-r{background:var(--acc3);color:#fff;border-color:var(--acc3);}
+.btn-r:hover{background:#a02020;}
+.main{flex:1;display:flex;overflow:hidden;}
+.pnl{display:flex;flex-direction:column;min-width:0;}
+/* Editor */
+.ed-hdr{display:flex;align-items:center;padding:3px 8px;background:var(--bg2);border-bottom:1px solid var(--border);font-size:10px;gap:4px;flex-shrink:0;}
+.ed-hdr input{width:44px;padding:1px 3px;border:1px solid var(--border);border-radius:3px;font-family:'JetBrains Mono',monospace;font-size:10px;}
+.ed-wrap{flex:1;display:flex;overflow:hidden;}
+.ln-col{width:32px;background:var(--bg2);border-right:1px solid var(--border);padding:6px 0;font-family:'JetBrains Mono',monospace;font-size:12px;line-height:18px;color:var(--text3);text-align:right;padding-right:5px;overflow:hidden;user-select:none;flex-shrink:0;}
+#ed{flex:1;padding:6px 8px;font-family:'JetBrains Mono',monospace;font-size:12px;line-height:18px;color:var(--text);background:var(--panel);border:none;outline:none;resize:none;white-space:pre;overflow:auto;tab-size:8;}
+/* Right panel */
+.tabs{display:flex;background:var(--bg2);border-bottom:1px solid var(--border);flex-shrink:0;}
+.tab{padding:4px 10px;cursor:pointer;font-size:10px;color:var(--text3);border-bottom:2px solid transparent;}
+.tab:hover{color:var(--text);}
+.tab.active{color:var(--acc);border-bottom-color:var(--acc);font-weight:600;}
+.tcontent{flex:1;overflow:auto;font-family:'JetBrains Mono',monospace;font-size:10px;line-height:1.4;color:var(--text2);}
+.tcontent.hidden{display:none;}
+/* CRT Screen - DOM based */
+#crt{background:#0a0a0a;color:#aaa;font-family:'JetBrains Mono','Courier New',monospace;font-size:14px;line-height:1.2;padding:4px;overflow:hidden;white-space:pre;width:100%;min-height:340px;display:block;border-bottom:1px solid #333;letter-spacing:0.5px;}
+#crt-wrap{position:relative;background:#000;border:2px solid #222;border-radius:4px;overflow:hidden;}
+#crt-wrap::after{content:'';position:absolute;top:0;left:0;right:0;bottom:0;background:repeating-linear-gradient(0deg,rgba(0,0,0,.08) 0px,rgba(0,0,0,.08) 1px,transparent 1px,transparent 3px);pointer-events:none;z-index:1;}
+/* Input area below CRT */
+#inputArea{background:#111;color:#0f0;font-family:'JetBrains Mono',monospace;font-size:12px;padding:2px 6px;border:none;outline:none;width:100%;height:24px;caret-color:#0f0;}
+/* Log */
+#logarea{background:var(--bg);font-family:'JetBrains Mono',monospace;font-size:9px;line-height:1.4;color:var(--text3);padding:3px 6px;overflow:auto;max-height:120px;}
+.log-ok{color:var(--acc);}.log-err{color:var(--acc3);}.log-warn{color:var(--num);}.log-dim{color:var(--text3);}
+/* Status */
+.sbar{display:flex;align-items:center;gap:10px;padding:2px 10px;background:var(--bg2);border-top:1px solid var(--border);font-size:9px;color:var(--text3);flex-shrink:0;}
+.sbar b{color:var(--text2);font-weight:500;}
+/* CPU */
+.cr-row{display:flex;gap:4px;margin:1px 0;}.cr-name{font-weight:700;color:var(--acc2);width:24px;}.cr-val{color:var(--text);font-weight:500;}
+.cr-sec{font-size:9px;color:var(--text3);margin:4px 0 1px;text-transform:uppercase;letter-spacing:.5px;}
+.flag-on{color:var(--acc);font-weight:700;}.flag-off{color:var(--border);}
+.hex-view{padding:6px;overflow:auto;}
+</style>
+</head>
+<body>
+<div class="hdr">
+  <h1>ASM<b>8086</b></h1>
+  <button class="btn" id="mASM" onclick="setMode('asm')" style="font-weight:600">ASM</button>
+  <button class="btn" id="mHEX" onclick="setMode('hex')">HEX</button>
+  <div style="flex:1"></div>
+  <button class="btn btn-p" onclick="assemble()">▶ Assemble</button>
+  <button class="btn btn-p" onclick="runCPU()">⚙ Run</button>
+  <button class="btn btn-r" id="btnStop" onclick="stopCPU()" style="display:none">■ Stop</button>
+  <button class="btn" onclick="clearAll()">✕</button>
+  <button class="btn" onclick="runSelfTest()">🧪</button>
+</div>
+<div class="main">
+  <div class="pnl" style="flex:1;border-right:1px solid var(--border);">
+    <div class="ed-hdr"><label style="color:var(--text3)">ORG</label><input id="orgI" value="0100" maxlength="8" oninput="this.value=this.value.replace(/[^0-9a-fA-F]/g,'')"><span style="color:var(--text3)">h</span><div style="flex:1"></div><span id="eBadge" style="font-weight:600;color:var(--acc);font-size:10px">ASM</span></div>
+    <div class="ed-wrap">
+      <div class="ln-col" id="lnums">1</div>
+      <textarea id="ed" spellcheck="false" oninput="onEdit()" onscroll="syncScroll()" onkeydown="onKey(event)" onclick="updSt()" onkeyup="updSt()"></textarea>
+    </div>
+  </div>
+  <div class="pnl" style="flex:1;display:flex;flex-direction:column;">
+    <div class="tabs">
+      <div class="tab active" id="tScreen" onclick="swTab('Screen')">Screen</div>
+      <div class="tab" id="tHex" onclick="swTab('Hex')">Hex</div>
+      <div class="tab" id="tCPU" onclick="swTab('CPU')">CPU</div>
+      <div style="flex:1"></div>
+      <span id="bcount" style="font-size:9px;color:var(--text3);padding-right:6px;align-self:center">0 bytes</span>
+    </div>
+    <div id="tcScreen" class="tcontent" style="display:flex;flex-direction:column;padding:0;">
+      <div id="crt-wrap"><pre id="crt"></pre></div>
+      <input id="inputArea" placeholder="keyboard input here…" autocomplete="off" onkeydown="onTermKey(event)">
+      <div id="logarea"></div>
+    </div>
+    <div id="tcHex" class="tcontent hidden hex-view"></div>
+    <div id="tcCPU" class="tcontent hidden" style="padding:6px;"><div id="cpuDump"><span style="color:var(--text3)">—</span></div></div>
+  </div>
+</div>
+<div class="sbar">
+  <span>Ln <b id="sLn">1</b> Col <b id="sCol">1</b></span>
+  <span id="sOrg">0100h</span>
+  <span id="cpuStatus">—</span>
+  <div style="flex:1"></div>
+  <span id="clockInfo">4.77 MHz</span>
+</div>
+
+<script>
+let CPU8086Class=null,MemoryClass=null,selfTestFn=null;
+(function(){
+  const s=document.createElement('script');s.src='./dist/cpu8086.js';
+  s.onload=()=>{try{if(typeof CPU8086!=='undefined'){CPU8086Class=CPU8086;MemoryClass=Memory;}if(typeof selfTest==='function')selfTestFn=selfTest;if(CPU8086Class){log('cpu8086.js loaded','ok');if(selfTestFn)runSelfTest();}}catch(e){log(e.message,'err');}};
+  s.onerror=()=>log('cpu8086.js not found','warn');
+  document.head.appendChild(s);
+})();
+function runSelfTest(){if(!selfTestFn)return;const t0=performance.now();const r=selfTestFn();const ms=(performance.now()-t0).toFixed(1);if(r.totalFail===0)log(`🧪 ${r.totalPass} tests PASS (${ms}ms)`,'ok');else{log(`🧪 ${r.totalPass}/${r.totalPass+r.totalFail} (${r.totalFail} FAIL)`,'err');}}
+</script>
+<script>
+// ================================================================
+// STATE
+// ================================================================
+let mode='asm',curTab='Screen',asmBytes=null,symTbl={},lastOrg=0x100;
+let cpu=null,mem=null,running=false,runTimer=null;
+const CRT_COLS=80,CRT_ROWS=25;
+
+// ================================================================
+// CGA Color palette (16 colors)
+// ================================================================
+const CGA=[
+  '#000000','#0000AA','#00AA00','#00AAAA','#AA0000','#AA00AA','#AA5500','#AAAAAA',
+  '#555555','#5555FF','#55FF55','#55FFFF','#FF5555','#FF55FF','#FFFF55','#FFFFFF'
+];
+
+// ================================================================
+// CRT Rendering - VRAM → DOM (pre element)
+// ================================================================
+const crtEl=document.getElementById('crt');
+function renderCRT(){
+  if(!mem)return;
+  const VRAM=0xB8000;
+  let html='';
+  let prevFg=-1,prevBg=-1,spanOpen=false;
+  for(let row=0;row<CRT_ROWS;row++){
+    for(let col=0;col<CRT_COLS;col++){
+      const addr=VRAM+(row*CRT_COLS+col)*2;
+      const cc=mem.read8(addr);
+      const attr=mem.read8(addr+1);
+      const fg=attr&0x0F;
+      const bg=(attr>>4)&0x07;
+      // Change span if color changed
+      if(fg!==prevFg||bg!==prevBg){
+        if(spanOpen)html+='</span>';
+        html+=`<span style="color:${CGA[fg]};${bg?'background:'+CGA[bg]+';':''}">`;
+        spanOpen=true;prevFg=fg;prevBg=bg;
+      }
+      // Character
+      if(cc>=0x20&&cc<0x7F) html+=cc===0x26?'&amp;':cc===0x3C?'&lt;':cc===0x3E?'&gt;':String.fromCharCode(cc);
+      else html+=' ';
+    }
+    if(row<CRT_ROWS-1)html+='\n';
+  }
+  if(spanOpen)html+='</span>';
+  // Cursor (blinking block)
+  if(cpu){
+    const vs=cpu.getBiosVideoState();
+    const cr=vs.cursorRow,cc2=vs.cursorCol;
+    // Add cursor via overlay later or just mark it
+  }
+  crtEl.innerHTML=html;
+}
+// Initial blank screen
+crtEl.textContent=Array(CRT_ROWS).fill(' '.repeat(CRT_COLS)).join('\n');
+
+// ================================================================
+// LOG
+// ================================================================
+function log(msg,cls){const el=document.getElementById('logarea');const d=document.createElement('div');d.className='log-'+(cls||'dim');d.textContent=msg;el.appendChild(d);el.scrollTop=el.scrollHeight;}
+function clearLog(){document.getElementById('logarea').innerHTML='';}
+
+// ================================================================
+// MODE / TABS
+// ================================================================
+function setMode(m){mode=m;document.getElementById('mASM').style.fontWeight=m==='asm'?'600':'400';document.getElementById('mHEX').style.fontWeight=m==='hex'?'600':'400';document.getElementById('eBadge').textContent=m.toUpperCase();}
+function swTab(t){curTab=t;['Screen','Hex','CPU'].forEach(x=>{document.getElementById('t'+x).classList.toggle('active',x===t);document.getElementById('tc'+x).classList.toggle('hidden',x!==t);});}
+
+// ================================================================
+// EDITOR
+// ================================================================
+function onEdit(){updLN();updSt();}
+function updLN(){const ls=document.getElementById('ed').value.split('\n');document.getElementById('lnums').textContent=ls.map((_,i)=>i+1).join('\n');}
+function syncScroll(){document.getElementById('lnums').scrollTop=document.getElementById('ed').scrollTop;}
+function updSt(){const ed=document.getElementById('ed');const b=ed.value.substring(0,ed.selectionStart).split('\n');document.getElementById('sLn').textContent=b.length;document.getElementById('sCol').textContent=b[b.length-1].length+1;document.getElementById('sOrg').textContent=(document.getElementById('orgI').value||'0100')+'h';}
+function onKey(e){if(e.ctrlKey&&e.key==='Enter'){e.preventDefault();assemble();return;}if(e.ctrlKey&&(e.key==='r'||e.key==='R')){e.preventDefault();runCPU();return;}if(e.key==='Tab'){e.preventDefault();const ed=document.getElementById('ed'),s=ed.selectionStart,en=ed.selectionEnd;ed.value=ed.value.substring(0,s)+'        '+ed.value.substring(en);ed.selectionStart=ed.selectionEnd=s+8;onEdit();}}
+
+// ================================================================
+// ASSEMBLER HELPERS
+// ================================================================
+function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+function parseNum(s){s=String(s).trim();if(!s)return null;if(s.startsWith('0x')||s.startsWith('0X'))return parseInt(s,16);if(/^[0-9][0-9A-Fa-f]*[Hh]$/.test(s))return parseInt(s,16);if(/^[01]+[Bb]$/.test(s))return parseInt(s,2);if(/^[0-9]+[Dd]?$/.test(s))return parseInt(s,10);return null;}
+function b8(v){return[v&0xFF];}
+function b16(v){return[v&0xFF,(v>>8)&0xFF];}
+
+// ================================================================
+// ASSEMBLER MAIN
+// ================================================================
+function assemble(){
+  clearLog();log('Assembling…');
+  const src=document.getElementById('ed').value;
+  const orgRaw=document.getElementById('orgI').value.trim()||'0100';
+  lastOrg=parseInt(orgRaw,16)||0x0100;
+  if(mode==='hex'){const bytes=[];src.split('\n').forEach(l=>{l=l.replace(/;.*$/,'').trim();const ms=l.match(/[0-9A-Fa-f]{2}/g);if(ms)ms.forEach(m=>bytes.push(parseInt(m,16)));});asmBytes=new Uint8Array(bytes);log(`HEX: ${bytes.length} bytes`,'ok');document.getElementById('bcount').textContent=bytes.length+' bytes';return;}
+  const lines=src.split('\n'),labels={},errs=[];let bytes=[];
+  for(let pass=0;pass<2;pass++){bytes=[];let pc=lastOrg;
+    for(let i=0;i<lines.length;i++){let line=lines[i].replace(/;.*$/,'').trim();if(!line)continue;
+      const orgM=line.match(/^ORG\s+(.+)$/i);if(orgM){const v=parseNum(orgM[1]);if(v!==null)pc=v;continue;}
+      const equM=line.match(/^(\w+)\s+EQU\s+(.+)$/i);if(equM){if(pass===0)labels[equM[1]]=parseNum(equM[2]);continue;}
+      const lblM=line.match(/^(\w+)\s*:\s*(.*)/);if(lblM){if(pass===0)labels[lblM[1]]=pc;line=lblM[2].trim();if(!line)continue;}
+      const dlM=line.match(/^(\.[A-Za-z_]\w*)\s*:\s*(.*)/);if(dlM){if(pass===0)labels[dlM[1]]=pc;line=dlM[2].trim();if(!line)continue;}
+      const b=asmLine(line,pc,pass,labels,errs,i+1);if(b){for(const byte of b)bytes.push(byte&0xFF);pc+=b.length;}
+    }
+  }
+  if(errs.length){errs.forEach(e=>log('Error: '+e,'err'));log(`Failed (${errs.length} errors)`,'err');return;}
+  asmBytes=new Uint8Array(bytes);symTbl=labels;
+  log(`${bytes.length} bytes at ${lastOrg.toString(16).toUpperCase()}h`,'ok');
+  document.getElementById('bcount').textContent=bytes.length+' bytes';
+  // hex view
+  let hex='';for(let i=0;i<bytes.length;i++){if(i%16===0)hex+=`<span style="color:var(--text3)">${(lastOrg+i).toString(16).padStart(4,'0').toUpperCase()}:</span> `;hex+=bytes[i].toString(16).padStart(2,'0').toUpperCase()+' ';if(i%16===15)hex+='\n';}
+  document.getElementById('tcHex').innerHTML='<pre style="margin:0">'+hex+'</pre>';
+}
+
+// ================================================================
+// KEYBOARD INPUT → CPU
+// ================================================================
+function onTermKey(e){
+  if(!cpu||!running)return;
+  e.preventDefault();
+  let ascii=0,scan=0;
+  if(e.key.length===1){ascii=e.key.charCodeAt(0);scan=ascii;}
+  else if(e.key==='Enter'){ascii=0x0D;scan=0x1C;}
+  else if(e.key==='Backspace'){ascii=0x08;scan=0x0E;}
+  else if(e.key==='Escape'){ascii=0x1B;scan=0x01;}
+  else if(e.key==='Tab'){ascii=0x09;scan=0x0F;}
+  else return;
+  cpu.pushKey(scan,ascii);
+  // resume if halted waiting for key
+  if(cpu.halted){cpu.halted=false;}
+}
+
+// ================================================================
+// RUN CPU - Real-time at ~4.77MHz equivalent
+// ================================================================
+const CYCLES_PER_FRAME=79167; // 4,770,000 / 60fps
+let totalCycles=0,startTime=0;
+
+function runCPU(){
+  if(running){stopCPU();return;}
+  if(!asmBytes){log('Nothing assembled','warn');return;}
+  if(!CPU8086Class){log('CPU not loaded','err');return;}
+
+  mem=new MemoryClass();
+  cpu=new CPU8086Class(mem);
+  cpu.installBIOS();
+  mem.load(lastOrg,asmBytes);
+  cpu.reg.cs=0;cpu.reg.ip=lastOrg;cpu.reg.ds=0;
+
+  // BIOS output callback
+  cpu.onBiosOutput=()=>{}; // CRT handles display
+
+  running=true;totalCycles=0;startTime=performance.now();
+  document.getElementById('btnStop').style.display='';
+  document.getElementById('inputArea').focus();
+  log(`Running at 4.77 MHz…`);
+  swTab('Screen');
+
+  runFrame();
+}
+
+function runFrame(){
+  if(!running||!cpu)return;
+  const t0=performance.now();
+  let cycles=0;
+  while(cycles<CYCLES_PER_FRAME&&!cpu.halted){
+    cpu.step();
+    cycles++;
+    // Limit time per frame to 16ms to keep responsive
+    if(cycles%5000===0&&performance.now()-t0>14)break;
+  }
+  totalCycles+=cycles;
+
+  // Render CRT from VRAM
+  renderCRT();
+
+  // Update status
+  const elapsed=(performance.now()-startTime)/1000;
+  const mhz=elapsed>0?(totalCycles/elapsed/1e6).toFixed(2):'—';
+  document.getElementById('cpuStatus').textContent=cpu.halted?'HALTED':`Running ${mhz} MHz`;
+  document.getElementById('clockInfo').textContent=`${mhz} MHz`;
+
+  if(cpu.halted){
+    // HLT命令(0xF4)で止まったのか、キー入力待ちで止まったのかを区別
+    // キー入力待ち: IPがINT命令(0xCD)を指している
+    const nextOp=mem.read8(cpu.reg.cs*16+cpu.reg.ip);
+    if(nextOp===0xCD){
+      // キー入力待ち — 画面を更新しつつフレームを継続
+      document.getElementById('cpuStatus').textContent='Waiting for key…';
+      runTimer=requestAnimationFrame(runFrame);
+      return;
+    }
+    // 本当のHLT
+    running=false;
+    document.getElementById('btnStop').style.display='none';
+    renderCRT();
+    renderCPUDump();
+    log(`Halted after ${totalCycles} cycles (${elapsed.toFixed(2)}s)`,'ok');
+    return;
+  }
+  runTimer=requestAnimationFrame(runFrame);
+}
+
+function stopCPU(){
+  running=false;
+  if(runTimer){cancelAnimationFrame(runTimer);runTimer=null;}
+  if(cpu)cpu.halted=true;
+  document.getElementById('btnStop').style.display='none';
+  document.getElementById('cpuStatus').textContent='STOPPED';
+  renderCRT();
+  if(cpu)renderCPUDump();
+  log('Stopped by user','warn');
+}
+
+// ================================================================
+// CPU DUMP
+// ================================================================
+function renderCPUDump(){
+  if(!cpu)return;
+  const r=cpu.reg;const h=v=>v.toString(16).padStart(4,'0').toUpperCase();
+  const fv=(b,n)=>r.getFlag(b)?`<span class="flag-on">${n}</span>`:`<span class="flag-off">${n}</span>`;
+  document.getElementById('cpuDump').innerHTML=`
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+<div><div class="cr-sec">GENERAL</div>${[['AX',r.ax],['BX',r.bx],['CX',r.cx],['DX',r.dx]].map(([n,v])=>`<div class="cr-row"><span class="cr-name">${n}</span><span class="cr-val">${h(v)}</span></div>`).join('')}
+<div class="cr-sec">INDEX</div>${[['SI',r.si],['DI',r.di],['SP',r.sp],['BP',r.bp]].map(([n,v])=>`<div class="cr-row"><span class="cr-name">${n}</span><span class="cr-val">${h(v)}</span></div>`).join('')}</div>
+<div><div class="cr-sec">SEGMENT</div>${[['CS',r.cs],['DS',r.ds],['ES',r.es],['SS',r.ss]].map(([n,v])=>`<div class="cr-row"><span class="cr-name">${n}</span><span class="cr-val">${h(v)}</span></div>`).join('')}
+<div class="cr-sec">CONTROL</div><div class="cr-row"><span class="cr-name">IP</span><span class="cr-val">${h(r.ip)}</span></div>
+<div class="cr-sec">FLAGS</div><div style="display:flex;gap:3px;flex-wrap:wrap">${[[0x800,'OF'],[0x400,'DF'],[0x200,'IF'],[0x80,'SF'],[0x40,'ZF'],[0x10,'AF'],[4,'PF'],[1,'CF']].map(([b,n])=>fv(b,n)).join('')}</div></div></div>
+<div style="margin-top:6px;font-size:9px;color:var(--text3)">Halted: <b style="color:${cpu.halted?'var(--acc)':'var(--acc3)'}">${cpu.halted}</b> · Cycles: ${totalCycles}</div>`;
+}
+
+// ================================================================
+// CLEAR
+// ================================================================
+function clearAll(){
+  stopCPU();cpu=null;mem=null;
+  document.getElementById('ed').value='';asmBytes=null;
+  document.getElementById('tcHex').innerHTML='';
+  document.getElementById('cpuDump').innerHTML='<span style="color:var(--text3)">—</span>';
+  crtEl.textContent=Array(CRT_ROWS).fill(' '.repeat(CRT_COLS)).join('\n');
+  clearLog();document.getElementById('bcount').textContent='0 bytes';
+  document.getElementById('cpuStatus').textContent='—';
+  updLN();
+}
+</script>
+
+<script>
+// ================================================================
+// ASSEMBLER - asmLine (メモリオペランド完全対応)
+// ================================================================
+// ── Single line assembler (memory operand対応) ──
+function asmLine(line, pc, pass, labels, errs, lineNum){
+  const parts=line.match(/^(\w+)\s*(.*)?$/);
+  if(!parts){errs.push(`Line ${lineNum}: parse error`);return null;}
+  const mn=parts[1].toUpperCase();
+  const operands=(parts[2]||'').trim();
+  const R16={AX:0,CX:1,DX:2,BX:3,SP:4,BP:5,SI:6,DI:7};
+  const R8={AL:0,CL:1,DL:2,BL:3,AH:4,CH:5,DH:6,BH:7};
+  const SR={ES:0,CS:1,SS:2,DS:3};
+
+  function resolveOp(s){
+    s=s.trim();
+    let sz=0;
+    const pm=s.match(/^(BYTE|WORD)\s+(?:PTR\s+)?(.*)/i);
+    if(pm){sz=pm[1].toUpperCase()==='BYTE'?1:2;s=pm[2].trim();}
+    const su=s.toUpperCase();
+    if(su in R16)return{type:'reg16',reg:su,val:0};
+    if(su in R8)return{type:'reg8',reg:su,val:0};
+    if(su in SR)return{type:'sreg',reg:su,val:0};
+    const mm=s.match(/^\[(.+)\]$/);
+    if(mm)return parseMem(mm[1].trim(),sz);
+    const n=parseNum(s);
+    if(n!==null)return{type:'imm',val:n};
+    if(labels[s]!==undefined)return{type:'imm',val:labels[s]};
+    if(s.startsWith('.')&&labels[s]!==undefined)return{type:'imm',val:labels[s]};
+    if(labels['.'+s]!==undefined)return{type:'imm',val:labels['.'+s]};
+    if(pass===1)errs.push(`Line ${lineNum}: undefined '${s}'`);
+    return{type:'imm',val:0};
+  }
+  function parseMem(expr,sz){
+    const tp=sz===1?'mem8':sz===2?'mem16':'mem';
+    expr=expr.toUpperCase().replace(/\s+/g,'');
+    const toks=[];let cur='',sg='+';
+    for(let i=0;i<=expr.length;i++){
+      const ch=expr[i];
+      if(i===expr.length||ch==='+'||ch==='-'){
+        if(cur)toks.push({sg,v:cur});if(ch)sg=ch;cur='';
+      }else cur+=ch;
+    }
+    let base='',idx='',disp=0;
+    const RR={BX:1,BP:1,SI:1,DI:1};
+    toks.forEach(t=>{
+      if(t.v in RR){
+        if(!base&&(t.v==='BX'||t.v==='BP'))base=t.v;
+        else if(!idx&&(t.v==='SI'||t.v==='DI'))idx=t.v;
+        else if(!base)base=t.v;else if(!idx)idx=t.v;
+      }else{
+        let n=parseNum(t.v);
+        if(n===null){const lk=t.v.toLowerCase();if(labels[lk]!==undefined)n=labels[lk];else if(labels[t.v]!==undefined)n=labels[t.v];else n=0;}
+        disp+=(t.sg==='-'?-n:n);
+      }
+    });
+    let mod,rm;
+    if(!base&&!idx){mod=0;rm=6;return{type:tp,mod,rm,disp:disp&0xFFFF};}
+    if(base==='BX'&&idx==='SI')rm=0;
+    else if(base==='BX'&&idx==='DI')rm=1;
+    else if(base==='BP'&&idx==='SI')rm=2;
+    else if(base==='BP'&&idx==='DI')rm=3;
+    else if((base==='SI'||idx==='SI')&&!base.match(/^B/))rm=4;
+    else if((base==='DI'||idx==='DI')&&!base.match(/^B/))rm=5;
+    else if(base==='BP'&&!idx)rm=6;
+    else if(base==='BX'&&!idx)rm=7;
+    else if(base==='SI')rm=4;
+    else if(base==='DI')rm=5;
+    else{mod=0;rm=6;return{type:tp,mod,rm,disp:disp&0xFFFF};}
+    if(disp===0&&rm!==6)mod=0;
+    else if(disp>=-128&&disp<=127)mod=1;
+    else mod=2;
+    return{type:tp,mod,rm,disp};
+  }
+  function isMem(o){return o&&(o.type==='mem'||o.type==='mem8'||o.type==='mem16');}
+  function isR16(o){return o&&o.type==='reg16';}
+  function isR8(o){return o&&o.type==='reg8';}
+  function encModRM(reg,o){
+    if(!isMem(o)){
+      const rv=isR16(o)?R16[o.reg]:isR8(o)?R8[o.reg]:0;
+      return[0xC0|(reg<<3)|rv];
+    }
+    const{mod,rm,disp}=o;const mr=(mod<<6)|(reg<<3)|rm;
+    if(mod===0&&rm===6)return[mr,...b16(disp&0xFFFF)];
+    if(mod===0)return[mr];if(mod===1)return[mr,disp&0xFF];
+    return[mr,...b16(disp&0xFFFF)];
+  }
+  function splitOps(s){
+    const ops=[];let cur='',inStr=false,q='',brk=0;
+    for(let i=0;i<s.length;i++){
+      if(!inStr&&s[i]==='[')brk++;if(!inStr&&s[i]===']')brk--;
+      if(!inStr&&brk===0&&s[i]===','){ops.push(cur.trim());cur='';continue;}
+      if(!inStr&&(s[i]==="'"||s[i]==='"')){inStr=true;q=s[i];cur+=s[i];continue;}
+      if(inStr&&s[i]===q)inStr=false;
+      cur+=s[i];
+    }
+    if(cur.trim())ops.push(cur.trim());return ops;
+  }
+  const ops=splitOps(operands);
+  // DB/DW/DD
+  if(mn==='DB'){
+    const bytes=[];ops.forEach(op=>{op=op.trim();
+      if((op.startsWith("'")&&op.endsWith("'"))||(op.startsWith('"')&&op.endsWith('"')))
+        for(let i=1;i<op.length-1;i++)bytes.push(op.charCodeAt(i));
+      else{const v=parseNum(op);if(v!==null)bytes.push(v&0xFF);else if(labels[op]!==undefined)bytes.push(labels[op]&0xFF);
+        else if(pass===1)errs.push(`Line ${lineNum}: undefined '${op}'`);else bytes.push(0);}
+    });return bytes;
+  }
+  if(mn==='DW')return ops.flatMap(op=>{const v=parseNum(op.trim());return v!==null?b16(v):[0,0];});
+  if(mn==='DD')return ops.flatMap(op=>{const v=parseNum(op.trim());return v!==null?[...b16(v&0xFFFF),...b16((v>>16)&0xFFFF)]:[0,0,0,0];});
+  if(mn==='TIMES'){const m=operands.match(/^(\d+)\s+(.+)$/);if(m){const n=parseInt(m[1]);const b2=asmLine(m[2],pc,pass,labels,errs,lineNum);return b2?Array(n).fill(b2).flat():null;}return null;}
+
+  const d=ops[0]?resolveOp(ops[0]):{type:'none',val:0};
+  const s=ops[1]?resolveOp(ops[1]):{type:'none',val:0};
+
+  // MOV
+  if(mn==='MOV'){
+    if(isR16(d)&&s.type==='imm')return[0xB8+R16[d.reg],...b16(s.val)];
+    if(isR8(d)&&s.type==='imm')return[0xB0+R8[d.reg],...b8(s.val)];
+    if(isR16(d)&&isR16(s))return[0x89,0xC0|(R16[s.reg]<<3)|R16[d.reg]];
+    if(isR8(d)&&isR8(s))return[0x88,0xC0|(R8[s.reg]<<3)|R8[d.reg]];
+    if(isR16(d)&&s.type==='sreg')return[0x8C,0xC0|(SR[s.reg]<<3)|R16[d.reg]];
+    if(d.type==='sreg'&&isR16(s))return[0x8E,0xC0|(SR[d.reg]<<3)|R16[s.reg]];
+    if(d.type==='sreg'&&s.type==='imm')return[0xB8,...b16(s.val),0x8E,0xC0|(SR[d.reg]<<3)];
+    if(isR16(d)&&isMem(s))return[0x8B,...encModRM(R16[d.reg],s)];
+    if(isR8(d)&&isMem(s))return[0x8A,...encModRM(R8[d.reg],s)];
+    if(isMem(d)&&isR16(s))return[0x89,...encModRM(R16[s.reg],d)];
+    if(isMem(d)&&isR8(s))return[0x88,...encModRM(R8[s.reg],d)];
+    if(d.type==='mem8'&&s.type==='imm')return[0xC6,...encModRM(0,d),...b8(s.val)];
+    if(isMem(d)&&s.type==='imm')return[0xC7,...encModRM(0,d),...b16(s.val)];
+    if(d.type==='sreg'&&isMem(s))return[0x8E,...encModRM(SR[d.reg],s)];
+    if(isMem(d)&&s.type==='sreg')return[0x8C,...encModRM(SR[s.reg],d)];
+  }
+  // ALU
+  const ALU={ADD:0,OR:1,ADC:2,SBB:3,AND:4,SUB:5,XOR:6,CMP:7};
+  if(mn in ALU){
+    const op=ALU[mn];
+    if(d.reg==='AX'&&s.type==='imm')return[0x05+op*8,...b16(s.val)];
+    if(d.reg==='AL'&&s.type==='imm')return[0x04+op*8,...b8(s.val)];
+    if(isR16(d)&&s.type==='imm'){if(s.val>=-128&&s.val<=127)return[0x83,...encModRM(op,d),...b8(s.val)];return[0x81,...encModRM(op,d),...b16(s.val)];}
+    if(isR8(d)&&s.type==='imm')return[0x80,...encModRM(op,d),...b8(s.val)];
+    if(isMem(d)&&s.type==='imm'&&d.type!=='mem8'){if(s.val>=-128&&s.val<=127)return[0x83,...encModRM(op,d),...b8(s.val)];return[0x81,...encModRM(op,d),...b16(s.val)];}
+    if(d.type==='mem8'&&s.type==='imm')return[0x80,...encModRM(op,d),...b8(s.val)];
+    if(isR16(d)&&isR16(s))return[op*8+1,0xC0|(R16[s.reg]<<3)|R16[d.reg]];
+    if(isR8(d)&&isR8(s))return[op*8,0xC0|(R8[s.reg]<<3)|R8[d.reg]];
+    if(isR16(d)&&isMem(s))return[op*8+3,...encModRM(R16[d.reg],s)];
+    if(isR8(d)&&isMem(s))return[op*8+2,...encModRM(R8[d.reg],s)];
+    if(isMem(d)&&isR16(s))return[op*8+1,...encModRM(R16[s.reg],d)];
+    if(isMem(d)&&isR8(s))return[op*8,...encModRM(R8[s.reg],d)];
+  }
+  // TEST
+  if(mn==='TEST'){
+    if(d.reg==='AL'&&s.type==='imm')return[0xA8,...b8(s.val)];
+    if(d.reg==='AX'&&s.type==='imm')return[0xA9,...b16(s.val)];
+    if(isR16(d)&&isR16(s))return[0x85,0xC0|(R16[s.reg]<<3)|R16[d.reg]];
+    if(isR8(d)&&isR8(s))return[0x84,0xC0|(R8[s.reg]<<3)|R8[d.reg]];
+    if(isR8(d)&&s.type==='imm')return[0xF6,...encModRM(0,d),...b8(s.val)];
+    if(isR16(d)&&s.type==='imm')return[0xF7,...encModRM(0,d),...b16(s.val)];
+    if(isMem(d)&&s.type==='imm'&&d.type==='mem8')return[0xF6,...encModRM(0,d),...b8(s.val)];
+    if(isMem(d)&&s.type==='imm')return[0xF7,...encModRM(0,d),...b16(s.val)];
+    if(isMem(d)&&isR16(s))return[0x85,...encModRM(R16[s.reg],d)];
+    if(isMem(d)&&isR8(s))return[0x84,...encModRM(R8[s.reg],d)];
+  }
+  // INC/DEC
+  if(mn==='INC'){if(isR16(d))return[0x40+R16[d.reg]];if(isR8(d))return[0xFE,...encModRM(0,d)];if(d.type==='mem8')return[0xFE,...encModRM(0,d)];if(isMem(d))return[0xFF,...encModRM(0,d)];}
+  if(mn==='DEC'){if(isR16(d))return[0x48+R16[d.reg]];if(isR8(d))return[0xFE,...encModRM(1,d)];if(d.type==='mem8')return[0xFE,...encModRM(1,d)];if(isMem(d))return[0xFF,...encModRM(1,d)];}
+  // PUSH/POP
+  if(mn==='PUSH'){if(isR16(d))return[0x50+R16[d.reg]];if(d.type==='sreg')return[0x06+SR[d.reg]*8];if(d.type==='imm')return[0x68,...b16(d.val)];if(isMem(d))return[0xFF,...encModRM(6,d)];}
+  if(mn==='POP'){if(isR16(d))return[0x58+R16[d.reg]];if(d.type==='sreg')return[0x07+SR[d.reg]*8];if(isMem(d))return[0x8F,...encModRM(0,d)];}
+  // Jcc
+  const JC={JO:0x70,JNO:0x71,JB:0x72,JC:0x72,JNAE:0x72,JNB:0x73,JNC:0x73,JAE:0x73,JE:0x74,JZ:0x74,JNE:0x75,JNZ:0x75,JBE:0x76,JNA:0x76,JA:0x77,JNBE:0x77,JS:0x78,JNS:0x79,JP:0x7A,JPE:0x7A,JNP:0x7B,JPO:0x7B,JL:0x7C,JNGE:0x7C,JGE:0x7D,JNL:0x7D,JLE:0x7E,JNG:0x7E,JG:0x7F,JNLE:0x7F,JCXZ:0xE3};
+  if(mn in JC){const opc=JC[mn];const tgt=d.val??pc+2;if(pass===0)return[opc,0];const rel=tgt-(pc+2);if(rel<-128||rel>127){errs.push(`Line ${lineNum}: ${mn} out of range`);return[opc,0];}return[opc,rel&0xFF];}
+  // JMP
+  if(mn==='JMP'){if(isR16(d))return[0xFF,0xC0|(4<<3)|R16[d.reg]];if(isMem(d))return[0xFF,...encModRM(4,d)];const tgt=d.val??pc+2;if(pass===0)return[0xEB,0];const rel=tgt-(pc+2);if(rel>=-128&&rel<=127)return[0xEB,rel&0xFF];return[0xE9,...b16((tgt-(pc+3))&0xFFFF)];}
+  // CALL/RET
+  if(mn==='CALL'){if(isR16(d))return[0xFF,0xC0|(2<<3)|R16[d.reg]];if(isMem(d))return[0xFF,...encModRM(2,d)];const tgt=d.val??pc+3;if(pass===0)return[0xE8,0,0];return[0xE8,...b16((tgt-(pc+3))&0xFFFF)];}
+  if(mn==='RET'||mn==='RETN')return ops.length>0&&d.type==='imm'?[0xC2,...b16(d.val)]:[0xC3];
+  if(mn==='RETF')return ops.length>0&&d.type==='imm'?[0xCA,...b16(d.val)]:[0xCB];
+  // LOOP
+  const LP={LOOP:0xE2,LOOPE:0xE1,LOOPZ:0xE1,LOOPNE:0xE0,LOOPNZ:0xE0};
+  if(mn in LP){const opc=LP[mn];const tgt=d.val??pc+2;if(pass===0)return[opc,0];const rel=tgt-(pc+2);if(rel<-128||rel>127){errs.push(`Line ${lineNum}: ${mn} too far`);return[opc,0];}return[opc,rel&0xFF];}
+  // INT
+  if(mn==='INT')return[0xCD,d.val&0xFF];
+  // Simple
+  const SIM={NOP:0x90,HLT:0xF4,CBW:0x98,CWD:0x99,PUSHA:0x60,POPA:0x61,PUSHF:0x9C,POPF:0x9D,CLC:0xF8,STC:0xF9,CLI:0xFA,STI:0xFB,CLD:0xFC,STD:0xFD,CMC:0xF5,MOVSB:0xA4,MOVSW:0xA5,STOSB:0xAA,STOSW:0xAB,LODSB:0xAC,LODSW:0xAD,SCASB:0xAE,SCASW:0xAF,IRET:0xCF,INTO:0xCE,DAA:0x27,DAS:0x2F,AAA:0x37,AAS:0x3F,XLAT:0xD7,SAHF:0x9E,LAHF:0x9F};
+  if(mn in SIM)return[SIM[mn]];
+  // REP
+  if(mn==='REP'||mn==='REPE'||mn==='REPZ'){const inner=asmLine(operands,pc+1,pass,labels,errs,lineNum);return inner?[0xF3,...inner]:null;}
+  if(mn==='REPNE'||mn==='REPNZ'){const inner=asmLine(operands,pc+1,pass,labels,errs,lineNum);return inner?[0xF2,...inner]:null;}
+  // XCHG
+  if(mn==='XCHG'){
+    if(isR16(d)&&s.reg==='AX')return[0x90+R16[d.reg]];if(isR16(s)&&d.reg==='AX')return[0x90+R16[s.reg]];
+    if(isR16(d)&&isR16(s))return[0x87,0xC0|(R16[d.reg]<<3)|R16[s.reg]];if(isR8(d)&&isR8(s))return[0x86,0xC0|(R8[d.reg]<<3)|R8[s.reg]];
+    if(isR16(d)&&isMem(s))return[0x87,...encModRM(R16[d.reg],s)];if(isR8(d)&&isMem(s))return[0x86,...encModRM(R8[d.reg],s)];
+  }
+  // Shift/Rotate
+  const SH={ROL:0,ROR:1,RCL:2,RCR:3,SHL:4,SAL:4,SHR:5,SAR:7};
+  if(mn in SH){const op=SH[mn];
+    if(isR16(d)){if(s.type==='imm'&&s.val===1)return[0xD1,...encModRM(op,d)];if(s.reg==='CL')return[0xD3,...encModRM(op,d)];if(s.type==='imm')return[0xC1,...encModRM(op,d),s.val&0xFF];}
+    if(isR8(d)){if(s.type==='imm'&&s.val===1)return[0xD0,...encModRM(op,d)];if(s.reg==='CL')return[0xD2,...encModRM(op,d)];if(s.type==='imm')return[0xC0,...encModRM(op,d),s.val&0xFF];}
+    if(isMem(d)){const b0=d.type==='mem8'?0xD0:0xD1;if(s.type==='imm'&&s.val===1)return[b0,...encModRM(op,d)];if(s.reg==='CL')return[b0+2,...encModRM(op,d)];if(s.type==='imm')return[b0-0x10,...encModRM(op,d),s.val&0xFF];}
+  }
+  // NOT/NEG
+  if(mn==='NOT'){if(isR16(d))return[0xF7,...encModRM(2,d)];if(isR8(d))return[0xF6,...encModRM(2,d)];if(d.type==='mem8')return[0xF6,...encModRM(2,d)];if(isMem(d))return[0xF7,...encModRM(2,d)];}
+  if(mn==='NEG'){if(isR16(d))return[0xF7,...encModRM(3,d)];if(isR8(d))return[0xF6,...encModRM(3,d)];if(d.type==='mem8')return[0xF6,...encModRM(3,d)];if(isMem(d))return[0xF7,...encModRM(3,d)];}
+  // MUL/IMUL/DIV/IDIV
+  const MD={MUL:4,IMUL:5,DIV:6,IDIV:7};
+  if(mn in MD){const op=MD[mn];if(isR16(d))return[0xF7,...encModRM(op,d)];if(isR8(d))return[0xF6,...encModRM(op,d)];if(isMem(d))return[(d.type==='mem8'?0xF6:0xF7),...encModRM(op,d)];}
+  // LEA
+  if(mn==='LEA'&&isR16(d)&&isMem(s))return[0x8D,...encModRM(R16[d.reg],s)];
+  // IN/OUT
+  if(mn==='IN'){if(d.reg==='AL'&&s.type==='imm')return[0xE4,s.val&0xFF];if(d.reg==='AX'&&s.type==='imm')return[0xE5,s.val&0xFF];if(d.reg==='AL'&&s.reg==='DX')return[0xEC];if(d.reg==='AX'&&s.reg==='DX')return[0xED];}
+  if(mn==='OUT'){if(d.type==='imm'&&s.reg==='AL')return[0xE6,d.val&0xFF];if(d.type==='imm'&&s.reg==='AX')return[0xE7,d.val&0xFF];if(d.reg==='DX'&&s.reg==='AL')return[0xEE];if(d.reg==='DX'&&s.reg==='AX')return[0xEF];}
+  // AAM/AAD
+  if(mn==='AAM')return[0xD4,d.val||0x0A];if(mn==='AAD')return[0xD5,d.val||0x0A];
+  // ENTER/LEAVE
+  if(mn==='ENTER')return[0xC8,...b16(d.val||0),...b8(s.val||0)];if(mn==='LEAVE')return[0xC9];
+
+  if(pass===1)errs.push(`Line ${lineNum}: unknown instruction '${mn}'`);
+  return null;
+}
+</script>
+
+<script>
+// ================================================================
+// INIT
+// ================================================================
+document.getElementById('ed').value=`        ORG 0100h
+
+; ===========================
+; Hello World — BIOS INT 10h
+; ===========================
+
+start:
+        MOV SI, msg
+
+.loop:
+        LODSB
+        TEST AL, AL
+        JZ  .done
+        MOV AH, 0Eh
+        MOV BH, 0
+        INT 10h
+        JMP .loop
+
+.done:
+        MOV AX, 4C00h
+        INT 21h
+
+msg:    DB 'Hello, 8086!', 0Dh, 0Ah, 0
+`;
+updLN();updSt();
+</script>
+</body>
+</html>

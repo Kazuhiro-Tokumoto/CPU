@@ -1,0 +1,14 @@
+{
+  "name": "i8080-emulator",
+  "version": "1.0.0",
+  "description": "Intel 8080 CPU Emulator in TypeScript",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "test": "tsc && node dist/test.js"
+  },
+  "devDependencies": {
+    "@types/node": "^25.3.0",
+    "typescript": "^5.0.0"
+  }
+}
