@@ -68,6 +68,8 @@ class Registers {
         this.ds = 0;
         this.es = 0;
         this.ss = 0;
+        this.fs = 0;
+        this.gs = 0;
         this.ip = 0xFFF0;
         this.flags = 0x0002;
     }
@@ -115,6 +117,7 @@ function decodeModRM(byte) {
 class CPU8086 {
     constructor(mem) {
         this.halted = false;
+        this.haltReason = ''; // 'hlt', 'program_exit', 'key_wait', ''
         this.waitCycles = 0;
         // セグメントオーバーライド (null = デフォルト)
         this.segOverride = null;
@@ -141,9 +144,19 @@ class CPU8086 {
         this.biosCursorCol = 0;
         this.biosVideoRows = 25;
         this.biosVideoCols = 80;
+        this.biosCharHeight = 16;
         // VRAM: B800:0000 (80x25 text mode = 4000 bytes)
         this.VRAM_SEG = 0xB800;
         this.VRAM_BASE = 0xB8000;
+        // DOS file I/O handler (set by msdos.js DOSFileIO)
+        this.dosFileIO = null;
+        // Mouse state
+        this.mouseX = 0;
+        this.mouseY = 0;
+        this.mouseButtons = 0;
+        // Timer
+        this.timerCounter = 0;
+        this.timerInterval = 0;
         this.reg = new Registers();
         this.mem = mem !== null && mem !== void 0 ? mem : new Memory();
     }
@@ -159,6 +172,7 @@ class CPU8086 {
     reset() {
         this.reg = new Registers();
         this.halted = false;
+        this.haltReason = '';
         this.waitCycles = 0;
         this.segOverride = null;
         this.repPrefix = null;
@@ -566,6 +580,8 @@ class CPU8086 {
                     this.reg.setFlag(FLAGS.CF, (result & 0x8000) !== 0);
                     result = ((result << 1) | oldCF) & 0xFFFF;
                 }
+                if (cnt === 1)
+                    this.reg.setFlag(FLAGS.OF, ((result >> 15) & 1) !== (this.reg.getFlag(FLAGS.CF) ? 1 : 0));
                 break;
             case 3: // RCR
                 for (let i = 0; i < cnt; i++) {
@@ -573,6 +589,8 @@ class CPU8086 {
                     this.reg.setFlag(FLAGS.CF, (result & 1) !== 0);
                     result = ((oldCF << 15) | (result >> 1)) & 0xFFFF;
                 }
+                if (cnt === 1)
+                    this.reg.setFlag(FLAGS.OF, ((result >> 15) ^ ((result >> 14) & 1)) !== 0);
                 break;
             case 4:
             case 6: // SHL/SAL
@@ -709,6 +727,14 @@ class CPU8086 {
                 this.segOverride = this.reg.ds;
                 this._step();
                 return; // DS:
+            case 0x64:
+                this.segOverride = this.reg.fs;
+                this._step();
+                return; // FS:
+            case 0x65:
+                this.segOverride = this.reg.gs;
+                this._step();
+                return; // GS:
             case 0xF0:
                 this._step();
                 return; // LOCK (ignore)
@@ -1661,6 +1687,7 @@ class CPU8086 {
             case 0x9D:
                 this.reg.flags = (this.pop() & 0x0FD5) | 0x0002;
                 break;
+            case 0x9B: break; // WAIT/FWAIT (NOP - FPU not implemented)
             case 0x9E:
                 this.reg.flags = (this.reg.flags & 0xFF00) | (this.reg.ah & 0xD5) | 0x02;
                 break; // SAHF
@@ -2119,6 +2146,7 @@ class CPU8086 {
             // ================================================================
             case 0xF4:
                 this.halted = true;
+                this.haltReason = 'hlt';
                 break;
             // ================================================================
             // フラグ操作 (F5/F8/F9/FA/FB/FC/FD)
@@ -2247,7 +2275,7 @@ class CPU8086 {
                     case 4: { // MUL r/m16 → DX:AX = AX * r/m16
                         const result = this.reg.ax * a;
                         this.reg.ax = result & 0xFFFF;
-                        this.reg.dx = (result >> 16) & 0xFFFF;
+                        this.reg.dx = Math.trunc(result / 0x10000) & 0xFFFF;
                         const overflow = this.reg.dx !== 0;
                         this.reg.setFlag(FLAGS.CF, overflow);
                         this.reg.setFlag(FLAGS.OF, overflow);
@@ -2256,7 +2284,7 @@ class CPU8086 {
                     case 5: { // IMUL r/m16 → DX:AX = AX * r/m16 (signed)
                         const result = this.toSigned16(this.reg.ax) * this.toSigned16(a);
                         this.reg.ax = result & 0xFFFF;
-                        this.reg.dx = (result >> 16) & 0xFFFF;
+                        this.reg.dx = Math.trunc(result / 0x10000) & 0xFFFF;
                         const overflow = result < -32768 || result > 32767;
                         this.reg.setFlag(FLAGS.CF, overflow);
                         this.reg.setFlag(FLAGS.OF, overflow);
@@ -2267,7 +2295,7 @@ class CPU8086 {
                             this.doInterrupt(0);
                             break;
                         }
-                        const dividend = (this.reg.dx << 16) | this.reg.ax;
+                        const dividend = this.reg.dx * 0x10000 + this.reg.ax;
                         const q = Math.floor(dividend / a);
                         if (q > 0xFFFF) {
                             this.doInterrupt(0);
@@ -2282,7 +2310,7 @@ class CPU8086 {
                             this.doInterrupt(0);
                             break;
                         }
-                        const dividend = this.toSigned32((this.reg.dx << 16) | this.reg.ax);
+                        const dividend = this.toSigned32(this.reg.dx * 0x10000 + this.reg.ax);
                         const divisor = this.toSigned16(a);
                         const q = Math.trunc(dividend / divisor);
                         if (q < -32768 || q > 32767) {
@@ -2526,6 +2554,20 @@ class CPU8086 {
                 if (this.debugMode)
                     this.debugLog.push(`UNKNOWN 0F ${op2.toString(16)}`);
                 break;
+            // PUSH FS (0F A0) / POP FS (0F A1)
+            case 0xA0:
+                this.push(this.reg.fs);
+                break;
+            case 0xA1:
+                this.reg.fs = this.pop();
+                break;
+            // PUSH GS (0F A8) / POP GS (0F A9)
+            case 0xA8:
+                this.push(this.reg.gs);
+                break;
+            case 0xA9:
+                this.reg.gs = this.pop();
+                break;
         }
     }
     // ================================================================
@@ -2623,8 +2665,12 @@ class CPU8086 {
         this.mem.write16(0x0450, 0x0000); // cursor position page 0 (col,row)
         this.mem.write16(0x0463, 0x03D4); // CRT controller base
         this.mem.write8(0x0484, 24); // rows - 1
+        this.mem.write16(0x0485, 16); // char height
         this.mem.write16(0x048A, 0); // keyboard buffer head
         this.mem.write16(0x048C, 0); // keyboard buffer tail
+        // Timer tick counter at 0040:006C (= 0x046C)
+        this.mem.write16(0x046C, 0);
+        this.mem.write16(0x046E, 0);
         // ── VRAM初期化 (B800:0000) ──
         for (let i = 0; i < 80 * 25; i++) {
             this.mem.write16(this.VRAM_BASE + i * 2, 0x0720); // space, attribute 07 (white on black)
@@ -2786,10 +2832,25 @@ class CPU8086 {
                     break;
                 case 0x10: // Palette (stub)
                     break;
-                case 0x11: // Character generator (stub)
+                case 0x11: // Character generator
                     if (this.reg.al === 0x30) { // Get font info
-                        this.reg.cx = 16; // char height
-                        this.reg.dl = 24; // rows - 1
+                        this.reg.cx = this.biosCharHeight || 16;
+                        this.reg.dl = this.biosVideoRows ? this.biosVideoRows - 1 : 24;
+                    } else if (this.reg.al === 0x12 || this.reg.al === 0x11 || this.reg.al === 0x14) {
+                        // 0x11 = Load 8x14 font, 0x12 = Load 8x8 font, 0x14 = Load 8x16 font
+                        if (this.reg.al === 0x12) {
+                            this.biosCharHeight = 8;
+                            this.biosVideoRows = 50; // 400/8 = 50 rows (or 43 on EGA)
+                        } else if (this.reg.al === 0x11) {
+                            this.biosCharHeight = 14;
+                            this.biosVideoRows = 28;
+                        } else {
+                            this.biosCharHeight = 16;
+                            this.biosVideoRows = 25;
+                        }
+                        // Update BDA
+                        this.mem.write8(0x0484, this.biosVideoRows - 1); // rows - 1
+                        this.mem.write16(0x0485, this.biosCharHeight); // char height
                     }
                     break;
                 case 0x12: // Alternate select (stub)
@@ -2927,6 +2988,7 @@ class CPU8086 {
                         // キーがない場合、ビジーウェイト回避でhalt
                         this.reg.ip = (this.reg.ip - 2) & 0xFFFF; // INT 16hを再実行するようIPを戻す
                         this.halted = true; // 一時停止（キー入力で再開）
+                        this.haltReason = 'key_wait';
                     }
                     break;
                 case 0x01: // Check key available
@@ -3004,6 +3066,11 @@ class CPU8086 {
                 }
             }
         });
+        // ── INT 20h: Program Terminate (old style) ──
+        this.registerInterrupt(0x20, () => {
+            this.halted = true;
+            this.haltReason = 'program_exit';
+        });
         // ── INT 21h: DOS Services (最低限) ──
         this.registerInterrupt(0x21, () => {
             var _a, _b, _c, _d, _e;
@@ -3023,6 +3090,7 @@ class CPU8086 {
                     else {
                         this.reg.ip = (this.reg.ip - 2) & 0xFFFF;
                         this.halted = true;
+                        this.haltReason = 'key_wait';
                     }
                     break;
                 }
@@ -3063,6 +3131,7 @@ class CPU8086 {
                     else {
                         this.reg.ip = (this.reg.ip - 2) & 0xFFFF;
                         this.halted = true;
+                        this.haltReason = 'key_wait';
                     }
                     break;
                 }
@@ -3162,23 +3231,193 @@ class CPU8086 {
                     }
                     break;
                 }
-                case 0x44: // IOCTL (stub)
-                    this.reg.ax = 1; // invalid function
-                    this.reg.setFlag(FLAGS.CF, true);
+                case 0x19: // Get current default drive
+                    this.reg.al = 0; // A:
                     break;
-                case 0x48: // Allocate memory (stub)
-                    this.reg.ax = 8; // insufficient memory
-                    this.reg.bx = 0;
-                    this.reg.setFlag(FLAGS.CF, true);
+                case 0x1A: { // Set DTA address
+                    if (this.dosFileIO) this.dosFileIO.dtaSeg = this.reg.ds;
+                    if (this.dosFileIO) this.dosFileIO.dtaOff = this.reg.dx;
                     break;
-                case 0x4A: // Resize memory block (stub)
-                    this.reg.setFlag(FLAGS.CF, false);
+                }
+                case 0x2F: // Get DTA address
+                    if (this.dosFileIO) {
+                        this.reg.es = this.dosFileIO.dtaSeg;
+                        this.reg.bx = this.dosFileIO.dtaOff;
+                    } else {
+                        this.reg.es = 0;
+                        this.reg.bx = 0x0080;
+                    }
+                    break;
+                case 0x3C: // Create file (AH=3Ch, CX=attr, DS:DX=filename) → AX=handle
+                case 0x3D: // Open file (AH=3Dh, AL=mode, DS:DX=filename) → AX=handle
+                case 0x3E: // Close file (AH=3Eh, BX=handle)
+                case 0x3F: // Read file (AH=3Fh, BX=handle, CX=count, DS:DX=buf) → AX=bytes read
+                case 0x40: { // Write file (AH=40h, BX=handle, CX=count, DS:DX=buf) → AX=bytes written
+                    if (this.dosFileIO) {
+                        this.dosFileIO.handleFileIO(this);
+                    } else {
+                        // fallback for write to stdout/stderr
+                        if (this.reg.ah === 0x40 && (this.reg.bx === 1 || this.reg.bx === 2)) {
+                            let addr = this.reg.segmented(this.reg.ds, this.reg.dx);
+                            for (let i = 0; i < this.reg.cx; i++) {
+                                const ch = this.mem.read8(addr++);
+                                const oldAX = this.reg.ax;
+                                this.reg.ah = 0x0E;
+                                this.reg.al = ch;
+                                (_e = this.interruptHandlers.get(0x10)) === null || _e === void 0 ? void 0 : _e();
+                                this.reg.ax = oldAX;
+                            }
+                            this.reg.ax = this.reg.cx;
+                            this.reg.setFlag(FLAGS.CF, false);
+                        } else {
+                            this.reg.ax = 6; // invalid handle
+                            this.reg.setFlag(FLAGS.CF, true);
+                        }
+                    }
+                    break;
+                }
+                case 0x41: // Delete file (DS:DX=filename)
+                case 0x42: // Seek (BX=handle, CX:DX=offset, AL=origin) → DX:AX=new pos
+                case 0x43: // Get/Set file attributes
+                case 0x47: // Get current directory
+                case 0x4E: // FindFirst (CX=attr, DS:DX=spec)
+                case 0x4F: // FindNext
+                case 0x56: // Rename file
+                case 0x57: // Get/Set file date/time
+                case 0x3B: // Change directory
+                {
+                    if (this.dosFileIO) {
+                        this.dosFileIO.handleFileIO(this);
+                    } else {
+                        this.reg.ax = 2; // file not found
+                        this.reg.setFlag(FLAGS.CF, true);
+                    }
+                    break;
+                }
+                case 0x44: // IOCTL
+                    if (this.reg.al === 0x00 && (this.reg.bx <= 2)) {
+                        // Get device info for stdin/stdout/stderr
+                        this.reg.dx = 0x80D3; // character device, stdin/stdout
+                        this.reg.setFlag(FLAGS.CF, false);
+                    } else if (this.reg.al === 0x07) {
+                        // Get output status
+                        this.reg.al = 0xFF; // ready
+                        this.reg.setFlag(FLAGS.CF, false);
+                    } else {
+                        this.reg.ax = 1;
+                        this.reg.setFlag(FLAGS.CF, true);
+                    }
+                    break;
+                case 0x48: // Allocate memory (BX=paragraphs)
+                case 0x49: // Free memory (ES=segment)
+                case 0x4A: // Resize memory (ES=segment, BX=new size)
+                {
+                    if (this.dosFileIO) {
+                        this.dosFileIO.handleMemory(this);
+                    } else {
+                        if (this.reg.ah === 0x4A) {
+                            this.reg.setFlag(FLAGS.CF, false);
+                        } else {
+                            this.reg.ax = 8;
+                            this.reg.bx = 0;
+                            this.reg.setFlag(FLAGS.CF, true);
+                        }
+                    }
+                    break;
+                }
+                case 0x4B: // EXEC (load and execute program)
+                    // Stub - not supported in this environment
+                    this.reg.ax = 2; // file not found
+                    this.reg.setFlag(FLAGS.CF, true);
                     break;
                 case 0x4C: // Terminate program
                     this.halted = true;
+                    this.haltReason = 'program_exit';
+                    break;
+                case 0x4D: // Get return code
+                    this.reg.ax = 0; // normal termination, code 0
+                    break;
+                case 0x50: // Set current PSP
+                    if (this.dosFileIO) this.dosFileIO.currentPSP = this.reg.bx;
+                    break;
+                case 0x51: // Get current PSP
+                case 0x62: // Get PSP address
+                    this.reg.bx = this.dosFileIO ? this.dosFileIO.currentPSP : 0;
+                    break;
+                case 0x59: // Get extended error info
+                    this.reg.ax = 0; // no error
+                    this.reg.bh = 0; this.reg.bl = 0; this.reg.ch = 0;
                     break;
                 default:
                     // Unknown DOS function - ignore
+                    break;
+            }
+        });
+        // ── INT 22h: Terminate address (stub) ──
+        this.registerInterrupt(0x22, () => {});
+        // ── INT 23h: Ctrl-C handler (stub) ──
+        this.registerInterrupt(0x23, () => {});
+        // ── INT 24h: Critical error handler (stub) ──
+        this.registerInterrupt(0x24, () => {
+            this.reg.al = 0; // ignore error
+        });
+        // ── INT 27h: TSR (stub - just halt) ──
+        this.registerInterrupt(0x27, () => {
+            this.halted = true;
+            this.haltReason = 'program_exit';
+        });
+        // ── INT 28h: DOS idle (stub) ──
+        this.registerInterrupt(0x28, () => {});
+        // ── INT 2Fh: Multiplex interrupt (stub) ──
+        this.registerInterrupt(0x2F, () => {
+            switch (this.reg.ah) {
+                case 0x16: // Windows enhanced mode
+                    if (this.reg.al === 0x00) this.reg.al = 0x00; // not running
+                    break;
+                case 0x43: // XMS
+                    if (this.reg.al === 0x00) this.reg.al = 0x00; // not installed
+                    break;
+                default:
+                    break;
+            }
+        });
+        // ── INT 33h: Mouse Services (stub) ──
+        this.registerInterrupt(0x33, () => {
+            switch (this.reg.ax) {
+                case 0x0000: // Reset/detect mouse
+                    this.reg.ax = 0xFFFF; // mouse installed
+                    this.reg.bx = 2; // 2 buttons
+                    break;
+                case 0x0001: // Show cursor
+                    break;
+                case 0x0002: // Hide cursor
+                    break;
+                case 0x0003: // Get position and button status
+                    this.reg.bx = this.mouseButtons || 0;
+                    this.reg.cx = this.mouseX || 0;
+                    this.reg.dx = this.mouseY || 0;
+                    break;
+                case 0x0004: // Set position
+                    this.mouseX = this.reg.cx;
+                    this.mouseY = this.reg.dx;
+                    break;
+                case 0x0007: // Set horizontal range
+                    break;
+                case 0x0008: // Set vertical range
+                    break;
+                case 0x000B: // Get motion counters
+                    this.reg.cx = 0;
+                    this.reg.dx = 0;
+                    break;
+                case 0x000C: // Set user-defined handler
+                    break;
+                case 0x0015: // Get driver info
+                    this.reg.bx = 8; // major
+                    this.reg.cx = 0; // minor
+                    break;
+                case 0x001A: // Set mouse sensitivity
+                    break;
+                default:
                     break;
             }
         });
@@ -3194,8 +3433,17 @@ class CPU8086 {
             `SI=${r.si.toString(16).padStart(4, '0')} DI=${r.di.toString(16).padStart(4, '0')} SP=${r.sp.toString(16).padStart(4, '0')} BP=${r.bp.toString(16).padStart(4, '0')}`,
             `CS=${r.cs.toString(16).padStart(4, '0')} DS=${r.ds.toString(16).padStart(4, '0')} ES=${r.es.toString(16).padStart(4, '0')} SS=${r.ss.toString(16).padStart(4, '0')}`,
             `IP=${r.ip.toString(16).padStart(4, '0')} FLAGS=${r.flags.toString(16).padStart(4, '0')} [${f(FLAGS.OF, 'O')}${f(FLAGS.DF, 'D')}${f(FLAGS.IF, 'I')}${f(FLAGS.SF, 'S')}${f(FLAGS.ZF, 'Z')}${f(FLAGS.AF, 'A')}${f(FLAGS.PF, 'P')}${f(FLAGS.CF, 'C')}]`,
+            `FS=${r.fs.toString(16).padStart(4, '0')} GS=${r.gs.toString(16).padStart(4, '0')}`,
             `Halted: ${this.halted}`,
         ].join('\n');
+    }
+    // BIOSタイマーティック更新 (0040:006C)
+    tickBiosTimer() {
+        const lo = this.mem.read16(0x046C);
+        const hi = this.mem.read16(0x046E);
+        const val = (hi * 0x10000 + lo + 1) & 0xFFFFFFFF;
+        this.mem.write16(0x046C, val & 0xFFFF);
+        this.mem.write16(0x046E, (val >>> 16) & 0xFFFF);
     }
 }
 function selfTest() {
@@ -3209,21 +3457,16 @@ function selfTest() {
             // --- INT 10h のハンドラを修正 ---
             c.registerInterrupt(0x10, () => {
                 if (c.reg.ah === 0x0E) {
-                    const char = String.fromCharCode(c.reg.al);
-                    // window オブジェクト経由で index.html の log 関数を探す
-                    const globalLog = window.log;
-                    if (typeof globalLog === 'function') {
-                        globalLog(char, 'info');
-                    }
-                    else {
-                        // log が見つからない場合はコンソールに出す（エラー回避）
-                        console.log(char);
+                    // 文字出力（テスト環境ではログのみ）
+                    if (typeof window !== 'undefined' && typeof window.log === 'function') {
+                        window.log(String.fromCharCode(c.reg.al), 'info');
                     }
                 }
             });
             c.registerInterrupt(0x21, () => {
                 if (c.reg.ah === 0x4C) {
                     c.halted = true;
+                    c.haltReason = 'program_exit';
                 }
             });
             // --- ここまで ---

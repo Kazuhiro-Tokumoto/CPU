@@ -132,6 +132,29 @@ gfxCanvas.addEventListener('click',()=>hiInput.focus());
 hiInput.addEventListener('focus',()=>document.getElementById('cursor').style.display='inline-block');
 hiInput.addEventListener('blur', ()=>document.getElementById('cursor').style.display='none');
 
+// Mouse events → CPU
+function updateMouse(e, canvas) {
+  if (!window._cpuInstance) return;
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = 320 / rect.width;
+  const scaleY = 200 / rect.height;
+  window._cpuInstance.mouseX = Math.max(0, Math.min(319, Math.floor((e.clientX - rect.left) * scaleX)));
+  window._cpuInstance.mouseY = Math.max(0, Math.min(199, Math.floor((e.clientY - rect.top) * scaleY)));
+}
+gfxCanvas.addEventListener('mousemove', e => updateMouse(e, gfxCanvas));
+gfxCanvas.addEventListener('mousedown', e => {
+  if (!window._cpuInstance) return;
+  updateMouse(e, gfxCanvas);
+  if (e.button === 0) window._cpuInstance.mouseButtons |= 1;
+  if (e.button === 2) window._cpuInstance.mouseButtons |= 2;
+});
+gfxCanvas.addEventListener('mouseup', e => {
+  if (!window._cpuInstance) return;
+  if (e.button === 0) window._cpuInstance.mouseButtons &= ~1;
+  if (e.button === 2) window._cpuInstance.mouseButtons &= ~2;
+});
+gfxCanvas.addEventListener('contextmenu', e => e.preventDefault());
+
 // ============================================================
 // キー入力
 // ============================================================

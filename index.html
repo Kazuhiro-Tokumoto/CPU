@@ -281,6 +281,9 @@ function runFrame(){
   }
   totalCycles+=cycles;
 
+  // BIOS timer tick (~18.2 Hz simulation)
+  if(cpu.tickBiosTimer&&totalCycles%5500===0) cpu.tickBiosTimer();
+
   // Render CRT from VRAM
   renderCRT();
 
@@ -291,16 +294,14 @@ function runFrame(){
   document.getElementById('clockInfo').textContent=`${mhz} MHz`;
 
   if(cpu.halted){
-    // HLT命令(0xF4)で止まったのか、キー入力待ちで止まったのかを区別
-    // キー入力待ち: IPがINT命令(0xCD)を指している
-    const nextOp=mem.read8(cpu.reg.cs*16+cpu.reg.ip);
-    if(nextOp===0xCD){
+    const reason=cpu.haltReason||'';
+    if(reason==='key_wait'){
       // キー入力待ち — 画面を更新しつつフレームを継続
       document.getElementById('cpuStatus').textContent='Waiting for key…';
       runTimer=requestAnimationFrame(runFrame);
       return;
     }
-    // 本当のHLT
+    // 本当のHLT or プログラム終了
     running=false;
     document.getElementById('btnStop').style.display='none';
     renderCRT();
@@ -544,10 +545,11 @@ function asmLine(line, pc, pass, labels, errs, lineNum){
   if(mn==='PUSH'){if(isR16(d))return[0x50+R16[d.reg]];if(d.type==='sreg')return[0x06+SR[d.reg]*8];if(d.type==='imm')return[0x68,...b16(d.val)];if(isMem(d))return[0xFF,...encModRM(6,d)];}
   if(mn==='POP'){if(isR16(d))return[0x58+R16[d.reg]];if(d.type==='sreg')return[0x07+SR[d.reg]*8];if(isMem(d))return[0x8F,...encModRM(0,d)];}
   // Jcc
-  const JC={JO:0x70,JNO:0x71,JB:0x72,JC:0x72,JNAE:0x72,JNB:0x73,JNC:0x73,JAE:0x73,JE:0x74,JZ:0x74,JNE:0x75,JNZ:0x75,JBE:0x76,JNA:0x76,JA:0x77,JNBE:0x77,JS:0x78,JNS:0x79,JP:0x7A,JPE:0x7A,JNP:0x7B,JPO:0x7B,JL:0x7C,JNGE:0x7C,JGE:0x7D,JNL:0x7D,JLE:0x7E,JNG:0x7E,JG:0x7F,JNLE:0x7F,JCXZ:0xE3};
-  if(mn in JC){const opc=JC[mn];const tgt=d.val??pc+2;if(pass===0)return[opc,0];const rel=tgt-(pc+2);if(rel<-128||rel>127){errs.push(`Line ${lineNum}: ${mn} out of range`);return[opc,0];}return[opc,rel&0xFF];}
+  const JC={JO:0x70,JNO:0x71,JB:0x72,JC:0x72,JNAE:0x72,JNB:0x73,JNC:0x73,JAE:0x73,JE:0x74,JZ:0x74,JNE:0x75,JNZ:0x75,JBE:0x76,JNA:0x76,JA:0x77,JNBE:0x77,JS:0x78,JNS:0x79,JP:0x7A,JPE:0x7A,JNP:0x7B,JPO:0x7B,JL:0x7C,JNGE:0x7C,JGE:0x7D,JNL:0x7D,JLE:0x7E,JNG:0x7E,JG:0x7F,JNLE:0x7F};
+  if(mn in JC){const opc=JC[mn];const tgt=d.val??pc+4;if(pass===0)return[0x0F,0x80+(opc-0x70),0,0];const rel2=tgt-(pc+2);if(rel2>=-128&&rel2<=127){return[opc,rel2&0xFF,0x90,0x90];}const rel4=tgt-(pc+4);return[0x0F,0x80+(opc-0x70),...b16(rel4&0xFFFF)];}
+  if(mn==='JCXZ'){const tgt=d.val??pc+2;if(pass===0)return[0xE3,0];const rel=tgt-(pc+2);if(rel<-128||rel>127){errs.push(`Line ${lineNum}: JCXZ out of range`);return[0xE3,0];}return[0xE3,rel&0xFF];}
   // JMP
-  if(mn==='JMP'){if(isR16(d))return[0xFF,0xC0|(4<<3)|R16[d.reg]];if(isMem(d))return[0xFF,...encModRM(4,d)];const tgt=d.val??pc+2;if(pass===0)return[0xEB,0];const rel=tgt-(pc+2);if(rel>=-128&&rel<=127)return[0xEB,rel&0xFF];return[0xE9,...b16((tgt-(pc+3))&0xFFFF)];}
+  if(mn==='JMP'){if(isR16(d))return[0xFF,0xC0|(4<<3)|R16[d.reg]];if(isMem(d))return[0xFF,...encModRM(4,d)];const tgt=d.val??pc+3;if(pass===0)return[0xE9,0,0];const rel2=tgt-(pc+2);if(rel2>=-128&&rel2<=127){return[0xEB,rel2&0xFF,0x90];}return[0xE9,...b16((tgt-(pc+3))&0xFFFF)];}
   // CALL/RET
   if(mn==='CALL'){if(isR16(d))return[0xFF,0xC0|(2<<3)|R16[d.reg]];if(isMem(d))return[0xFF,...encModRM(2,d)];const tgt=d.val??pc+3;if(pass===0)return[0xE8,0,0];return[0xE8,...b16((tgt-(pc+3))&0xFFFF)];}
   if(mn==='RET'||mn==='RETN')return ops.length>0&&d.type==='imm'?[0xC2,...b16(d.val)]:[0xC3];

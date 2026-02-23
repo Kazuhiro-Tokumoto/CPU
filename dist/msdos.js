@@ -568,6 +568,354 @@ class CopyCon {
 }
 
 // ============================================================
+// DOSFileIO — CPU ↔ FAT12 bridging for INT 21h file operations
+// ============================================================
+class DOSFileIO {
+  constructor(disk, cwdParts, mem, cpu) {
+    this.disk = disk;
+    this.cwdParts = cwdParts;
+    this.mem = mem;
+    this.cpu = cpu;
+    this.dtaSeg = 0;
+    this.dtaOff = 0x0080;
+    this.currentPSP = 0;
+    this.handles = new Map(); // handle → {name, data, pos, mode, dirParts, modified, buf}
+    this.nextHandle = 5;
+    this.findSpec = '';
+    this.findAttr = 0;
+    this.findDirParts = [];
+    this.findEntries = [];
+    this.findIndex = 0;
+    this.mcbList = [];
+    this.freeStart = 0x1000;
+  }
+
+  _readString(seg, off) {
+    let s = '', addr = ((seg << 4) + off) & 0xFFFFF, lim = 0;
+    while (lim++ < 260) {
+      const ch = this.mem.read8(addr++);
+      if (ch === 0) break;
+      s += String.fromCharCode(ch);
+    }
+    return s;
+  }
+
+  _parsePath(path) {
+    path = path.replace(/^[A-Za-z]:\\?/, '').replace(/\\/g, '/');
+    const parts = path.split('/').filter(Boolean);
+    if (!parts.length) return [[], ''];
+    const fn = parts.pop().toUpperCase();
+    return [parts.map(s => s.toUpperCase()), fn];
+  }
+
+  buildPSP(pspSeg, cmdLine) {
+    const base = pspSeg << 4;
+    for (let i = 0; i < 256; i++) this.mem.write8(base + i, 0);
+    this.mem.write8(base + 0, 0xCD);
+    this.mem.write8(base + 1, 0x20);
+    this.mem.write16(base + 2, 0xA000);
+    // Far call to INT 21h at offset 5
+    this.mem.write8(base + 5, 0xCD);
+    this.mem.write8(base + 6, 0x21);
+    this.mem.write8(base + 7, 0xCB);
+    // File handle table (20 handles)
+    for (let i = 0; i < 20; i++) this.mem.write8(base + 0x18 + i, 0xFF);
+    for (let i = 0; i < 5; i++) this.mem.write8(base + 0x18 + i, i);
+    // Environment segment at offset 0x2C
+    const envSeg = pspSeg - 0x10;
+    this.mem.write16(base + 0x2C, envSeg);
+    this._buildEnvironment(envSeg);
+    // Command line at offset 0x80
+    const cl = (cmdLine || '').slice(0, 126);
+    this.mem.write8(base + 0x80, cl.length);
+    for (let i = 0; i < cl.length; i++) this.mem.write8(base + 0x81 + i, cl.charCodeAt(i));
+    this.mem.write8(base + 0x81 + cl.length, 0x0D);
+    this.dtaSeg = pspSeg;
+    this.dtaOff = 0x0080;
+    this.currentPSP = pspSeg;
+    // INT 20h return address on stack (CS:0000) — put a HLT at 0000
+    this.mem.write8(base + 0, 0xCD);
+    this.mem.write8(base + 1, 0x20);
+  }
+
+  _buildEnvironment(envSeg) {
+    const base = envSeg << 4;
+    let off = 0;
+    const vars = { COMSPEC: 'A:\\COMMAND.COM', PATH: 'A:\\', PROMPT: '$P$G', TEMP: 'A:\\TEMP' };
+    for (const [k, v] of Object.entries(vars)) {
+      const s = `${k}=${v}`;
+      for (let i = 0; i < s.length; i++) this.mem.write8(base + off++, s.charCodeAt(i));
+      this.mem.write8(base + off++, 0);
+    }
+    this.mem.write8(base + off++, 0);
+    this.mem.write16(base + off, 1); off += 2;
+    const progName = 'A:\\PROGRAM.COM';
+    for (let i = 0; i < progName.length; i++) this.mem.write8(base + off++, progName.charCodeAt(i));
+    this.mem.write8(base + off++, 0);
+  }
+
+  handleFileIO(cpu) {
+    switch (cpu.reg.ah) {
+      case 0x3B: this._chdir(cpu); break;
+      case 0x3C: this._createFile(cpu); break;
+      case 0x3D: this._openFile(cpu); break;
+      case 0x3E: this._closeFile(cpu); break;
+      case 0x3F: this._readFile(cpu); break;
+      case 0x40: this._writeFile(cpu); break;
+      case 0x41: this._deleteFile(cpu); break;
+      case 0x42: this._seekFile(cpu); break;
+      case 0x43: this._fileAttr(cpu); break;
+      case 0x47: this._getCwd(cpu); break;
+      case 0x4E: this._findFirst(cpu); break;
+      case 0x4F: this._findNext(cpu); break;
+      case 0x56: this._renameFile(cpu); break;
+      case 0x57: this._fileDateTime(cpu); break;
+      default: cpu.reg.ax = 1; cpu.reg.setFlag(0x0001, true); break;
+    }
+  }
+
+  _createFile(cpu) {
+    const path = this._readString(cpu.reg.ds, cpu.reg.dx);
+    const [dp, fn] = this._parsePath(path);
+    if (!fn) { cpu.reg.ax = 3; cpu.reg.setFlag(0x0001, true); return; }
+    try {
+      this.disk.writeFile([...this.cwdParts, ...dp], fn, new Uint8Array(0));
+      this.disk.flush();
+      const h = this.nextHandle++;
+      this.handles.set(h, { name: fn, data: new Uint8Array(0), pos: 0, mode: 1, dirParts: [...this.cwdParts, ...dp], modified: false, buf: [] });
+      cpu.reg.ax = h; cpu.reg.setFlag(0x0001, false);
+    } catch (e) { cpu.reg.ax = 5; cpu.reg.setFlag(0x0001, true); }
+  }
+
+  _openFile(cpu) {
+    const path = this._readString(cpu.reg.ds, cpu.reg.dx);
+    const mode = cpu.reg.al;
+    const [dp, fn] = this._parsePath(path);
+    if (!fn) { cpu.reg.ax = 2; cpu.reg.setFlag(0x0001, true); return; }
+    const data = this.disk.readFile([...this.cwdParts, ...dp], fn);
+    if (!data) { cpu.reg.ax = 2; cpu.reg.setFlag(0x0001, true); return; }
+    const h = this.nextHandle++;
+    this.handles.set(h, { name: fn, data, pos: 0, mode, dirParts: [...this.cwdParts, ...dp], modified: false, buf: null });
+    cpu.reg.ax = h; cpu.reg.setFlag(0x0001, false);
+  }
+
+  _closeFile(cpu) {
+    const h = cpu.reg.bx;
+    if (h <= 4) { cpu.reg.setFlag(0x0001, false); return; }
+    const entry = this.handles.get(h);
+    if (!entry) { cpu.reg.ax = 6; cpu.reg.setFlag(0x0001, true); return; }
+    if (entry.modified && entry.buf) {
+      try { this.disk.writeFile(entry.dirParts, entry.name, new Uint8Array(entry.buf)); this.disk.flush(); } catch (e) { }
+    }
+    this.handles.delete(h); cpu.reg.setFlag(0x0001, false);
+  }
+
+  _readFile(cpu) {
+    const h = cpu.reg.bx, count = cpu.reg.cx;
+    const bufAddr = ((cpu.reg.ds << 4) + cpu.reg.dx) & 0xFFFFF;
+    if (h === 0) {
+      if (cpu.biosKeyBuffer.length > 0) {
+        const ch = cpu.biosKeyBuffer.shift() & 0xFF;
+        this.mem.write8(bufAddr, ch); cpu.reg.ax = 1;
+      } else { cpu.reg.ax = 0; }
+      cpu.reg.setFlag(0x0001, false); return;
+    }
+    if (h <= 4) { cpu.reg.ax = 0; cpu.reg.setFlag(0x0001, false); return; }
+    const entry = this.handles.get(h);
+    if (!entry) { cpu.reg.ax = 6; cpu.reg.setFlag(0x0001, true); return; }
+    const data = entry.buf ? new Uint8Array(entry.buf) : entry.data;
+    const avail = Math.max(0, data.length - entry.pos);
+    const toRead = Math.min(count, avail);
+    for (let i = 0; i < toRead; i++) this.mem.write8(bufAddr + i, data[entry.pos + i]);
+    entry.pos += toRead;
+    cpu.reg.ax = toRead; cpu.reg.setFlag(0x0001, false);
+  }
+
+  _writeFile(cpu) {
+    const h = cpu.reg.bx, count = cpu.reg.cx;
+    const bufAddr = ((cpu.reg.ds << 4) + cpu.reg.dx) & 0xFFFFF;
+    if (h === 1 || h === 2) {
+      for (let i = 0; i < count; i++) {
+        const ch = this.mem.read8(bufAddr + i);
+        const oldAX = cpu.reg.ax;
+        cpu.reg.ah = 0x0E; cpu.reg.al = ch;
+        const handler = cpu.interruptHandlers.get(0x10);
+        if (handler) handler();
+        cpu.reg.ax = oldAX;
+      }
+      cpu.reg.ax = count; cpu.reg.setFlag(0x0001, false); return;
+    }
+    if (h <= 4) { cpu.reg.ax = count; cpu.reg.setFlag(0x0001, false); return; }
+    const entry = this.handles.get(h);
+    if (!entry) { cpu.reg.ax = 6; cpu.reg.setFlag(0x0001, true); return; }
+    if (!entry.buf) entry.buf = Array.from(entry.data);
+    while (entry.buf.length < entry.pos + count) entry.buf.push(0);
+    for (let i = 0; i < count; i++) entry.buf[entry.pos + i] = this.mem.read8(bufAddr + i);
+    entry.pos += count; entry.modified = true;
+    cpu.reg.ax = count; cpu.reg.setFlag(0x0001, false);
+  }
+
+  _deleteFile(cpu) {
+    const path = this._readString(cpu.reg.ds, cpu.reg.dx);
+    const [dp, fn] = this._parsePath(path);
+    if (this.disk.deleteEntry([...this.cwdParts, ...dp], fn)) {
+      this.disk.flush(); cpu.reg.setFlag(0x0001, false);
+    } else { cpu.reg.ax = 2; cpu.reg.setFlag(0x0001, true); }
+  }
+
+  _seekFile(cpu) {
+    const h = cpu.reg.bx, origin = cpu.reg.al;
+    const offset = (cpu.reg.cx << 16) | cpu.reg.dx;
+    if (h <= 4) { cpu.reg.dx = 0; cpu.reg.ax = 0; cpu.reg.setFlag(0x0001, false); return; }
+    const entry = this.handles.get(h);
+    if (!entry) { cpu.reg.ax = 6; cpu.reg.setFlag(0x0001, true); return; }
+    const size = entry.buf ? entry.buf.length : entry.data.length;
+    let np = origin === 0 ? offset : origin === 1 ? entry.pos + offset : size + offset;
+    if (np < 0) np = 0;
+    entry.pos = np;
+    cpu.reg.dx = (np >> 16) & 0xFFFF; cpu.reg.ax = np & 0xFFFF;
+    cpu.reg.setFlag(0x0001, false);
+  }
+
+  _fileAttr(cpu) {
+    const path = this._readString(cpu.reg.ds, cpu.reg.dx);
+    const [dp, fn] = this._parsePath(path);
+    if (cpu.reg.al === 0x00) {
+      const entries = this.disk.listDir([...this.cwdParts, ...dp]) || [];
+      const f = entries.find(e => e.name.toUpperCase() === fn);
+      if (f) { cpu.reg.cx = f.attr; cpu.reg.setFlag(0x0001, false); }
+      else { cpu.reg.ax = 2; cpu.reg.setFlag(0x0001, true); }
+    } else { cpu.reg.setFlag(0x0001, false); }
+  }
+
+  _getCwd(cpu) {
+    const addr = ((cpu.reg.ds << 4) + cpu.reg.si) & 0xFFFFF;
+    const cwd = this.cwdParts.join('\\');
+    for (let i = 0; i < cwd.length; i++) this.mem.write8(addr + i, cwd.charCodeAt(i));
+    this.mem.write8(addr + cwd.length, 0);
+    cpu.reg.setFlag(0x0001, false);
+  }
+
+  _chdir(cpu) {
+    const path = this._readString(cpu.reg.ds, cpu.reg.dx);
+    const clean = path.replace(/^[A-Za-z]:\\?/, '').replace(/\\/g, '/');
+    const parts = clean.split('/').filter(Boolean);
+    let np = [...this.cwdParts];
+    for (const p of parts) {
+      if (p === '..') np.pop();
+      else if (p !== '.') np.push(p.toUpperCase());
+    }
+    if (this.disk._resolveDirSectors(np)) {
+      this.cwdParts = np; cpu.reg.setFlag(0x0001, false);
+    } else { cpu.reg.ax = 3; cpu.reg.setFlag(0x0001, true); }
+  }
+
+  _findFirst(cpu) {
+    const spec = this._readString(cpu.reg.ds, cpu.reg.dx);
+    const [dp, pattern] = this._parsePath(spec || '*.*');
+    this.findDirParts = [...this.cwdParts, ...dp];
+    this.findAttr = cpu.reg.cx;
+    const re = new RegExp('^' + (pattern || '*.*').replace(/\./g, '\\.').replace(/\*/g, '.*').replace(/\?/g, '.') + '$', 'i');
+    this.findEntries = (this.disk.listDir(this.findDirParts) || []).filter(e => e.name !== '.' && e.name !== '..' && re.test(e.name));
+    this.findIndex = 0;
+    if (!this.findEntries.length) { cpu.reg.ax = 18; cpu.reg.setFlag(0x0001, true); return; }
+    this._writeFindResult(cpu, this.findEntries[0]);
+    this.findIndex = 1; cpu.reg.setFlag(0x0001, false);
+  }
+
+  _findNext(cpu) {
+    if (this.findIndex >= this.findEntries.length) { cpu.reg.ax = 18; cpu.reg.setFlag(0x0001, true); return; }
+    this._writeFindResult(cpu, this.findEntries[this.findIndex]);
+    this.findIndex++; cpu.reg.setFlag(0x0001, false);
+  }
+
+  _writeFindResult(cpu, entry) {
+    const dtaAddr = ((this.dtaSeg << 4) + this.dtaOff) & 0xFFFFF;
+    for (let i = 0; i < 21; i++) this.mem.write8(dtaAddr + i, 0);
+    this.mem.write8(dtaAddr + 21, entry.attr);
+    this.mem.write16(dtaAddr + 22, 0);
+    this.mem.write16(dtaAddr + 24, 0);
+    this.mem.write16(dtaAddr + 26, entry.size & 0xFFFF);
+    this.mem.write16(dtaAddr + 28, (entry.size >> 16) & 0xFFFF);
+    for (let i = 0; i < 13; i++) this.mem.write8(dtaAddr + 30 + i, i < entry.name.length ? entry.name.charCodeAt(i) : 0);
+  }
+
+  _renameFile(cpu) {
+    const oldPath = this._readString(cpu.reg.ds, cpu.reg.dx);
+    const newPath = this._readString(cpu.reg.es, cpu.reg.di);
+    const [dp1, fn1] = this._parsePath(oldPath);
+    const [dp2, fn2] = this._parsePath(newPath);
+    if (this.disk.renameEntry([...this.cwdParts, ...dp1], fn1, fn2)) {
+      this.disk.flush(); cpu.reg.setFlag(0x0001, false);
+    } else { cpu.reg.ax = 2; cpu.reg.setFlag(0x0001, true); }
+  }
+
+  _fileDateTime(cpu) {
+    if (cpu.reg.al === 0x00) { cpu.reg.cx = 0; cpu.reg.dx = 0; }
+    cpu.reg.setFlag(0x0001, false);
+  }
+
+  handleMemory(cpu) {
+    switch (cpu.reg.ah) {
+      case 0x48: {
+        const para = cpu.reg.bx, seg = this.freeStart;
+        if (seg + para > 0xA000) { cpu.reg.ax = 8; cpu.reg.bx = 0xA000 - seg; cpu.reg.setFlag(0x0001, true); return; }
+        this.mcbList.push({ seg, size: para, owner: this.currentPSP });
+        this.freeStart += para; cpu.reg.ax = seg; cpu.reg.setFlag(0x0001, false); break;
+      }
+      case 0x49: {
+        const seg = cpu.reg.es;
+        const idx = this.mcbList.findIndex(m => m.seg === seg);
+        if (idx >= 0) this.mcbList.splice(idx, 1);
+        cpu.reg.setFlag(0x0001, false); break;
+      }
+      case 0x4A: cpu.reg.setFlag(0x0001, false); break;
+    }
+  }
+}
+
+// ============================================================
+// EXE Loader — MZ format
+// ============================================================
+function loadEXE(mem, data, loadSeg) {
+  if (data.length < 28 || data[0] !== 0x4D || data[1] !== 0x5A) return null;
+  const headerParas = data[8] | (data[9] << 8);
+  const headerSize = headerParas * 16;
+  const relocCount = data[6] | (data[7] << 8);
+  const relocOff = data[24] | (data[25] << 8);
+  const initSS = data[14] | (data[15] << 8);
+  const initSP = data[16] | (data[17] << 8);
+  const initIP = data[20] | (data[21] << 8);
+  const initCS = data[22] | (data[23] << 8);
+  const lastPageBytes = data[2] | (data[3] << 8);
+  const pages = data[4] | (data[5] << 8);
+  const imageSize = (pages - (lastPageBytes ? 1 : 0)) * 512 + (lastPageBytes || 0) - headerSize;
+  const loadBase = loadSeg << 4;
+
+  for (let i = 0; i < imageSize && (headerSize + i) < data.length; i++) {
+    mem.write8(loadBase + i, data[headerSize + i]);
+  }
+
+  for (let i = 0; i < relocCount; i++) {
+    const rOff = relocOff + i * 4;
+    if (rOff + 3 >= data.length) break;
+    const off = data[rOff] | (data[rOff + 1] << 8);
+    const seg = data[rOff + 2] | (data[rOff + 3] << 8);
+    const addr = loadBase + (seg << 4) + off;
+    const val = mem.read16(addr) + loadSeg;
+    mem.write16(addr, val & 0xFFFF);
+  }
+
+  return {
+    cs: (initCS + loadSeg) & 0xFFFF,
+    ip: initIP,
+    ss: (initSS + loadSeg) & 0xFFFF,
+    sp: initSP || 0xFFFE,
+    loadSeg
+  };
+}
+
+// ============================================================
 // DOSShell
 // ============================================================
 class DOSShell {
@@ -1372,17 +1720,52 @@ class DOSShell {
 
   _execCOM(fn, data) {
     if (window._cpuRunning) { this.term.println('既に実行中です'); return; }
-    this.term.println('実行: ' + fn + ' (' + data.length + 'B)');
+    const fnUpper = fn.toUpperCase();
+    const isEXE = fnUpper.endsWith('.EXE') && data.length >= 28 && data[0] === 0x4D && data[1] === 0x5A;
+    this.term.println('実行: ' + fn + ' (' + data.length + 'B)' + (isEXE ? ' [EXE]' : ' [COM]'));
     window._lastExecName = fn;
     window._lastExecSize = data.length;
     try {
       const mem = new Memory();
       const cpu = new CPU8086(mem);
       cpu.installBIOS();
-      const ORG = 0x0100;
-      mem.load(ORG, data);
-      cpu.reg.cs = 0; cpu.reg.ds = 0; cpu.reg.es = 0; cpu.reg.ss = 0;
-      cpu.reg.sp = 0xFFFE; cpu.reg.ip = ORG;
+
+      // DOSFileIO setup
+      const dosIO = new DOSFileIO(this.disk, [...this.cwdParts], mem, cpu);
+      cpu.dosFileIO = dosIO;
+
+      let startCS, startIP, startSS, startSP, pspSeg;
+
+      if (isEXE) {
+        // EXE: PSP at 0x0000, load after PSP
+        pspSeg = 0x0000;
+        const loadSeg = 0x0010; // load at 0x00100
+        const result = loadEXE(mem, data, loadSeg);
+        if (!result) { this.term.println('EXEフォーマットエラー'); return; }
+        dosIO.buildPSP(pspSeg, '');
+        startCS = result.cs;
+        startIP = result.ip;
+        startSS = result.ss;
+        startSP = result.sp;
+      } else {
+        // COM: PSP at 0x0000, program at 0x0100
+        pspSeg = 0x0000;
+        const ORG = 0x0100;
+        mem.load(ORG, data);
+        dosIO.buildPSP(pspSeg, '');
+        startCS = 0;
+        startIP = ORG;
+        startSS = 0;
+        startSP = 0xFFFE;
+        // Push 0x0000 on stack (return to PSP INT 20h)
+        startSP -= 2;
+        mem.write16(startSP, 0x0000);
+      }
+
+      cpu.reg.cs = startCS; cpu.reg.ip = startIP;
+      cpu.reg.ds = pspSeg; cpu.reg.es = pspSeg;
+      cpu.reg.ss = startSS; cpu.reg.sp = startSP;
+
       const term = this.term;
       const shell = this;
       window._cpuInstance = cpu;
@@ -1393,6 +1776,9 @@ class DOSShell {
         if (window._onVideoModeChange) window._onVideoModeChange(mode);
       };
       const CYCLES_PER_TICK = 100000;
+      // Timer IRQ: fire INT 08h periodically (~18.2 Hz)
+      let timerAccum = 0;
+      const TIMER_INTERVAL = Math.floor(CYCLES_PER_TICK / 18.2 * 60); // cycles per timer tick at 60fps
       const tick = () => {
         if (!window._cpuRunning) return;
         const t0 = performance.now();
@@ -1402,12 +1788,24 @@ class DOSShell {
           cpu.step(); ran++;
           if (performance.now() - t0 > 14) break;
         }
+        // Timer IRQ simulation
+        timerAccum += ran;
+        if (timerAccum >= TIMER_INTERVAL) {
+          timerAccum -= TIMER_INTERVAL;
+          cpu.timerCounter++;
+          if (cpu.tickBiosTimer) cpu.tickBiosTimer();
+        }
         if (window.renderVRAM) window.renderVRAM();
         if (cpu.halted) {
-          const physIP = (cpu.reg.cs * 16 + cpu.reg.ip) & 0xFFFFF;
-          const op = mem.read8(physIP);
-          // HLT命令 or INT 21h/4Ch(プログラム終了) で停止
-          if (op === 0xF4 || (cpu.reg.ah === 0x4C)) {
+          const reason = cpu.haltReason || '';
+          if (reason === 'program_exit' || reason === 'hlt') {
+            // Flush all open file handles
+            for (const [h, entry] of dosIO.handles) {
+              if (entry.modified && entry.buf) {
+                try { this.disk.writeFile(entry.dirParts, entry.name, new Uint8Array(entry.buf)); } catch(e) {}
+              }
+            }
+            this.disk.flush();
             window._cpuRunning = false;
             window._cpuInstance = null;
             window._cpuMem = null;
@@ -1417,9 +1815,8 @@ class DOSShell {
             if (window.onDiskChange) window.onDiskChange();
             return;
           }
-          // INT命令(0xCD) = キー入力待ち等 → 継続
-          // それ以外の不明なhalt → 安全のため終了
-          if (op !== 0xCD) {
+          if (reason === 'key_wait') { /* continue */ }
+          else {
             window._cpuRunning = false;
             window._cpuInstance = null;
             window._cpuMem = null;
