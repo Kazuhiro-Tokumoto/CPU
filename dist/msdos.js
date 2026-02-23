@@ -81,13 +81,13 @@ class FAT12Disk {
     if(o2+1<512)this.w8(s2,o2+1,(cur>>8)&0xFF);else this.w8(s2+1,0,(cur>>8)&0xFF);
   }
   allocCluster() {
-    const max=Math.floor(this.SECTORS_PER_FAT*512*2/3);
-    for(let c=2;c<max;c++){if(this.getFAT(c)===0)return c;}
+    const maxCluster=2+(this.TOTAL_SECTORS-this.DATA_START)/this.SECTORS_PER_CLUSTER;
+    for(let c=2;c<maxCluster;c++){if(this.getFAT(c)===0)return c;}
     return -1;
   }
   freeClusters() {
-    const max=Math.floor(this.SECTORS_PER_FAT*512*2/3);
-    let f=0;for(let c=2;c<max;c++){if(this.getFAT(c)===0)f++;}return f;
+    const maxCluster = 2 + (this.TOTAL_SECTORS - this.DATA_START) / this.SECTORS_PER_CLUSTER;
+    let f=0;for(let c=2;c<maxCluster;c++){if(this.getFAT(c)===0)f++;}return f;
   }
   c2s(c){return this.DATA_START+c-2;}
   _resolveDirSectors(parts) {
@@ -1053,8 +1053,9 @@ class DOSShell {
 
   _chkdsk() {
     const free = this.disk.freeClusters();
-    const max = Math.floor(this.disk.SECTORS_PER_FAT * 512 * 2 / 3) - 2;
-    this.term.println(` 1,457,664 バイト  総ディスク領域`);
+    const max = (this.disk.TOTAL_SECTORS - this.disk.DATA_START) / this.disk.SECTORS_PER_CLUSTER;
+    const diskTotal = this.disk.TOTAL_SECTORS * 512;
+    this.term.println(` ${diskTotal.toLocaleString()} バイト  総ディスク領域`);
     this.term.println(`   ${((max - free) * 512).toLocaleString()} バイト  使用済み`);
     this.term.println(`   ${(free * 512).toLocaleString()} バイト  使用可能`);
     this.term.println('\n   655,360 バイト  総メモリ\n   655,360 バイト  使用可能');
@@ -1138,7 +1139,7 @@ class DOSShell {
     const convFree = CONV_TOTAL - convUsed;
 
     const freeClusters  = this.disk.freeClusters();
-    const totalClusters = Math.floor(this.disk.SECTORS_PER_FAT * 512 * 2 / 3) - 2;
+    const totalClusters = (this.disk.TOTAL_SECTORS - this.disk.DATA_START) / this.disk.SECTORS_PER_CLUSTER;
     const usedClusters  = totalClusters - freeClusters;
     const diskTotal = this.disk.TOTAL_SECTORS * 512;
     const diskUsed  = usedClusters * 512;
@@ -1299,18 +1300,34 @@ class DOSShell {
 
   // ── BATファイル実行 + .COM実行 ──
   _runFile(name, args) {
-    for (const fn of [name + '.COM', name + '.EXE', name + '.BAT', name]) {
+    // 拡張子付きで直接入力された場合
+    const hasExt = /\.\w+$/i.test(name);
+    let searchList;
+    if (hasExt) {
+      // 拡張子付き: そのファイル名だけを検索
+      searchList = [name.toUpperCase()];
+    } else {
+      // 拡張子なし: .COM, .EXE, .BAT の順で探す
+      searchList = [name + '.COM', name + '.EXE', name + '.BAT'];
+    }
+    for (const fn of searchList) {
       const data = this.disk.readFile(this.cwdParts, fn);
       if (data) {
-        if (fn.endsWith('.BAT')) {
+        const fnUpper = fn.toUpperCase();
+        if (fnUpper.endsWith('.BAT')) {
           this._runBat(fn, data, args);
           return;
         }
-        if (typeof CPU8086 !== 'undefined' && typeof Memory !== 'undefined') {
-          this._execCOM(fn, data);
-        } else {
-          this.term.println(`[${fn} - ${data.length}B - cpu8086.jsが必要です]`);
+        if (fnUpper.endsWith('.COM') || fnUpper.endsWith('.EXE')) {
+          if (typeof CPU8086 !== 'undefined' && typeof Memory !== 'undefined') {
+            this._execCOM(fn, data);
+          } else {
+            this.term.println(`[${fn} - ${data.length}B - cpu8086.jsが必要です]`);
+          }
+          return;
         }
+        // その他の拡張子 (.TXT等) は実行不可
+        this.term.println(`'${fn}' は実行可能なファイルではありません`);
         return;
       }
     }
@@ -1389,12 +1406,25 @@ class DOSShell {
         if (cpu.halted) {
           const physIP = (cpu.reg.cs * 16 + cpu.reg.ip) & 0xFFFFF;
           const op = mem.read8(physIP);
-          if (op === 0xF4) {
+          // HLT命令 or INT 21h/4Ch(プログラム終了) で停止
+          if (op === 0xF4 || (cpu.reg.ah === 0x4C)) {
             window._cpuRunning = false;
             window._cpuInstance = null;
             window._cpuMem = null;
             if (window.exitVRAMMode) window.exitVRAMMode();
             term.println('');
+            shell.prompt();
+            if (window.onDiskChange) window.onDiskChange();
+            return;
+          }
+          // INT命令(0xCD) = キー入力待ち等 → 継続
+          // それ以外の不明なhalt → 安全のため終了
+          if (op !== 0xCD) {
+            window._cpuRunning = false;
+            window._cpuInstance = null;
+            window._cpuMem = null;
+            if (window.exitVRAMMode) window.exitVRAMMode();
+            term.println('\n[プログラムが停止しました]');
             shell.prompt();
             if (window.onDiskChange) window.onDiskChange();
             return;

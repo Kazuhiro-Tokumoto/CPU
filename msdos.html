@@ -21,6 +21,8 @@ body::after{content:'';position:fixed;inset:0;background:repeating-linear-gradie
 #screen{flex:1;padding:6px 10px;overflow-y:auto;white-space:pre-wrap;word-break:break-all;font-size:13px;line-height:1.45;color:#ccc;background:#000;cursor:text;outline:none;min-width:0;}
 #cursor{display:inline-block;width:8px;background:#888;animation:blink .8s step-end infinite;}
 @keyframes blink{0%,100%{opacity:1}50%{opacity:0}}
+/* EDIT cursor */
+.edit-cursor{background:#ccc;color:#000;animation:blink .6s step-end infinite;}
 /* graphics canvas overlay */
 #gfxCanvas{display:none;position:absolute;top:0;left:0;image-rendering:pixelated;cursor:crosshair;}
 /* hidden input */
@@ -330,9 +332,39 @@ window.addEventListener('DOMContentLoaded', ()=>{
   refreshUI();
   hiInput.focus();
 
-  // EDITレンダリング
-  window._editRender=(text)=>{const st=document.getElementById('screenText');if(st)st.textContent=text;};
-  window._editExit=()=>{const st=document.getElementById('screenText');if(st)st.textContent=bufText+lineInput;};
+  // EDITレンダリング (カーソル付き)
+  window._editRender=(text, cursorRow, cursorCol)=>{
+    const st=document.getElementById('screenText');
+    if(!st)return;
+    // Hide normal cursor during EDIT
+    document.getElementById('cursor').style.display='none';
+    // Split text into lines, insert cursor character with highlight
+    const lines=text.split('\n');
+    let html='';
+    for(let i=0;i<lines.length;i++){
+      if(i>0)html+='\n';
+      if(i===cursorRow){
+        const line=lines[i];
+        const col=Math.min(cursorCol,line.length);
+        const before=line.slice(0,col);
+        const curCh=col<line.length?line[col]:' ';
+        const after=col<line.length?line.slice(col+1):'';
+        // Escape HTML
+        const esc=s=>s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+        html+=esc(before)+'<span class="edit-cursor">'+esc(curCh)+'</span>'+esc(after);
+      } else {
+        const esc=s=>s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+        html+=esc(lines[i]);
+      }
+    }
+    st.innerHTML=html;
+    screenEl.scrollTop=screenEl.scrollHeight;
+  };
+  window._editExit=()=>{
+    const st=document.getElementById('screenText');
+    if(st){st.textContent=bufText+lineInput;st.innerHTML=st.textContent.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+    document.getElementById('cursor').style.display='inline-block';
+  };
 
   // DEBUGモード: promptとexec
   window._debugPrompt=()=>{ bufText+='-'; render(); };
