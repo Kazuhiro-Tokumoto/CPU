@@ -148,6 +148,10 @@ class CPU8086 {
         // VRAM: B800:0000 (80x25 text mode = 4000 bytes)
         this.VRAM_SEG = 0xB800;
         this.VRAM_BASE = 0xB8000;
+        // ANSI.SYS emulation state
+        this._ansiState = 0; // 0=normal, 1=got ESC, 2=in CSI sequence
+        this._ansiParams = '';
+        this._ansiAttr = 0x07; // current text attribute
         // DOS file I/O handler (set by msdos.js DOSFileIO)
         this.dosFileIO = null;
         // Mouse state
@@ -2786,43 +2790,8 @@ class CPU8086 {
                     }
                     break;
                 }
-                case 0x0E: { // Teletype output
-                    const ch = this.reg.al;
-                    if (ch === 0x07) { /* bell - ignore */ }
-                    else if (ch === 0x08) { // backspace
-                        if (this.biosCursorCol > 0)
-                            this.biosCursorCol--;
-                    }
-                    else if (ch === 0x0A) { // line feed
-                        this.biosCursorRow++;
-                    }
-                    else if (ch === 0x0D) { // carriage return
-                        this.biosCursorCol = 0;
-                    }
-                    else {
-                        const addr = this.VRAM_BASE + (this.biosCursorRow * 80 + this.biosCursorCol) * 2;
-                        this.mem.write8(addr, ch);
-                        this.mem.write8(addr + 1, 0x07); // default attr
-                        this.biosCursorCol++;
-                    }
-                    if (this.biosCursorCol >= 80) {
-                        this.biosCursorCol = 0;
-                        this.biosCursorRow++;
-                    }
-                    if (this.biosCursorRow >= 25) {
-                        // Scroll up 1 line
-                        for (let i = 0; i < 80 * 24; i++) {
-                            this.mem.write16(this.VRAM_BASE + i * 2, this.mem.read16(this.VRAM_BASE + (i + 80) * 2));
-                        }
-                        for (let i = 0; i < 80; i++) {
-                            this.mem.write16(this.VRAM_BASE + (24 * 80 + i) * 2, 0x0720);
-                        }
-                        this.biosCursorRow = 24;
-                    }
-                    this.mem.write8(0x0450, this.biosCursorCol);
-                    this.mem.write8(0x0451, this.biosCursorRow);
-                    if (this.onBiosOutput)
-                        this.onBiosOutput(String.fromCharCode(ch));
+                case 0x0E: { // Teletype output (with ANSI.SYS)
+                    this._ttyOut(this.reg.al);
                     break;
                 }
                 case 0x0F: // Get video mode
@@ -3348,8 +3317,187 @@ class CPU8086 {
                     this.reg.ax = 0; // no error
                     this.reg.bh = 0; this.reg.bl = 0; this.reg.ch = 0;
                     break;
+                case 0x00: // Terminate program (same as INT 20h)
+                    this.halted = true;
+                    this.haltReason = 'program_exit';
+                    break;
+                case 0x03: // Auxiliary input (stub)
+                    this.reg.al = 0;
+                    break;
+                case 0x04: // Auxiliary output (stub)
+                    break;
+                case 0x05: // Printer output (stub)
+                    break;
+                case 0x0C: // Clear input buffer and invoke
+                    this.biosKeyBuffer = [];
+                    // Then invoke the function in AL
+                    if (this.reg.al === 0x01 || this.reg.al === 0x06 || this.reg.al === 0x07 || this.reg.al === 0x08 || this.reg.al === 0x0A) {
+                        // Re-invoke with the specified function
+                        const saveAh = this.reg.ah;
+                        this.reg.ah = this.reg.al;
+                        // Call self recursively - the interrupt handler will pick it up
+                    }
+                    break;
+                case 0x0D: // Disk reset (flush buffers)
+                    break;
+                case 0x0E: // Select disk
+                    this.reg.al = 1; // 1 logical drive (A:)
+                    break;
+                case 0x18: // Null function (CP/M compat)
+                    this.reg.al = 0;
+                    break;
+                case 0x1D: case 0x1E: case 0x1F: case 0x20: // Reserved
+                    break;
+                case 0x26: // Create new PSP (stub)
+                    break;
+                case 0x29: // Parse filename (stub)
+                    this.reg.al = 0xFF; // no valid filename
+                    break;
+                case 0x2D: // Set time (stub - can't set browser time)
+                    this.reg.al = 0; // success
+                    break;
+                case 0x2E: // Set verify flag (stub)
+                    break;
+                case 0x33: // Get/Set break flag
+                    if (this.reg.al === 0x00) { // Get
+                        this.reg.dl = 0; // break checking off
+                    } else if (this.reg.al === 0x05) { // Get boot drive
+                        this.reg.dl = 1; // A:
+                    } else if (this.reg.al === 0x06) { // Get DOS version (true)
+                        this.reg.bl = 6; this.reg.bh = 22;
+                        this.reg.dl = 0; this.reg.dh = 0;
+                    }
+                    break;
+                case 0x34: // Get InDOS flag pointer
+                    this.reg.es = 0x0050;
+                    this.reg.bx = 0x0000;
+                    this.mem.write8(0x0500, 0); // InDOS flag = 0 (not in DOS)
+                    break;
+                case 0x36: // Get disk free space
+                    // DL = drive (0=default, 1=A:)
+                    this.reg.ax = 1;   // sectors per cluster
+                    this.reg.bx = 1400; // free clusters
+                    this.reg.cx = 512;  // bytes per sector
+                    this.reg.dx = 2880; // total clusters
+                    break;
+                case 0x37: // Get/Set switch character
+                    if (this.reg.al === 0x00) this.reg.dl = 0x2F; // '/'
+                    break;
+                case 0x38: // Get/Set country info (stub)
+                    if (this.reg.al === 0x00) { // Get
+                        this.reg.bx = 81; // Japan
+                        this.reg.setFlag(FLAGS.CF, false);
+                    }
+                    break;
+                case 0x39: // Create directory
+                    this.reg.setFlag(FLAGS.CF, false);
+                    break;
+                case 0x3A: // Remove directory
+                    this.reg.setFlag(FLAGS.CF, false);
+                    break;
+                case 0x44: // IOCTL
+                    if (this.reg.al === 0x00) { // Get device info
+                        if (this.reg.bx <= 2) { // stdin/stdout/stderr
+                            this.reg.dx = 0x80D3; // character device, ready
+                        } else {
+                            this.reg.dx = 0x0000; // file on disk
+                        }
+                        this.reg.setFlag(FLAGS.CF, false);
+                    } else if (this.reg.al === 0x01) { // Set device info
+                        this.reg.setFlag(FLAGS.CF, false);
+                    } else if (this.reg.al === 0x07) { // Check output status
+                        this.reg.al = 0xFF; // ready
+                        this.reg.setFlag(FLAGS.CF, false);
+                    } else if (this.reg.al === 0x08) { // Check if block device removable
+                        this.reg.ax = 0; // removable
+                        this.reg.setFlag(FLAGS.CF, false);
+                    } else if (this.reg.al === 0x09) { // Check if block device remote
+                        this.reg.dx = 0; // local
+                        this.reg.setFlag(FLAGS.CF, false);
+                    } else if (this.reg.al === 0x0E) { // Get logical drive map
+                        this.reg.al = 0;
+                        this.reg.setFlag(FLAGS.CF, false);
+                    } else {
+                        this.reg.setFlag(FLAGS.CF, true);
+                        this.reg.ax = 1;
+                    }
+                    break;
+                case 0x45: // Duplicate file handle
+                    this.reg.ax = this.reg.bx + 0x10; // fake new handle
+                    this.reg.setFlag(FLAGS.CF, false);
+                    break;
+                case 0x46: // Force duplicate file handle
+                    this.reg.setFlag(FLAGS.CF, false);
+                    break;
+                case 0x48: // Allocate memory
+                    if (this.dosFileIO) this.dosFileIO.handleMemory(this);
+                    else { this.reg.ax = 8; this.reg.setFlag(FLAGS.CF, true); }
+                    break;
+                case 0x49: // Free memory
+                    if (this.dosFileIO) this.dosFileIO.handleMemory(this);
+                    else { this.reg.setFlag(FLAGS.CF, false); }
+                    break;
+                case 0x4A: // Resize memory block
+                    if (this.dosFileIO) this.dosFileIO.handleMemory(this);
+                    else { this.reg.setFlag(FLAGS.CF, false); }
+                    break;
+                case 0x54: // Get verify flag
+                    this.reg.al = 0; // verify off
+                    break;
+                case 0x58: // Get/Set memory allocation strategy
+                    if (this.reg.al === 0x00) this.reg.ax = 0; // first fit
+                    else if (this.reg.al === 0x02) this.reg.al = 0; // get UMB link state
+                    this.reg.setFlag(FLAGS.CF, false);
+                    break;
+                case 0x5D: // Server DOS call (stub)
+                    this.reg.setFlag(FLAGS.CF, true);
+                    this.reg.ax = 1;
+                    break;
+                case 0x60: // Resolve path (truename)
+                    {
+                        // DS:SI = input path, ES:DI = output buffer
+                        let path = '';
+                        let addr = this.reg.segmented(this.reg.ds, this.reg.si);
+                        for (let i = 0; i < 128; i++) {
+                            const ch = this.mem.read8(addr + i);
+                            if (ch === 0) break;
+                            path += String.fromCharCode(ch);
+                        }
+                        const resolved = 'A:\\' + path.replace(/\//g, '\\').toUpperCase();
+                        let outAddr = this.reg.segmented(this.reg.es, this.reg.di);
+                        for (let i = 0; i < resolved.length; i++) {
+                            this.mem.write8(outAddr + i, resolved.charCodeAt(i));
+                        }
+                        this.mem.write8(outAddr + resolved.length, 0);
+                        this.reg.setFlag(FLAGS.CF, false);
+                    }
+                    break;
+                case 0x63: // Get lead byte table (DBCS)
+                    this.reg.setFlag(FLAGS.CF, true); // not supported
+                    break;
+                case 0x65: // Get extended country info (stub)
+                    this.reg.setFlag(FLAGS.CF, true);
+                    this.reg.ax = 1;
+                    break;
+                case 0x66: // Get/Set code page (stub)
+                    if (this.reg.al === 0x01) { // Get
+                        this.reg.bx = 437; // CP437
+                        this.reg.dx = 437;
+                    }
+                    this.reg.setFlag(FLAGS.CF, false);
+                    break;
+                case 0x67: // Set handle count (stub)
+                    this.reg.setFlag(FLAGS.CF, false);
+                    break;
+                case 0x68: // Commit file (stub - fflush)
+                    this.reg.setFlag(FLAGS.CF, false);
+                    break;
+                case 0x71: // Long filename functions (Windows 95)
+                    this.reg.ax = 0x7100; // not supported
+                    this.reg.setFlag(FLAGS.CF, true);
+                    break;
                 default:
-                    // Unknown DOS function - ignore
+                    // Unknown DOS function - ignore silently
                     break;
             }
         });
@@ -3421,7 +3569,462 @@ class CPU8086 {
                     break;
             }
         });
+        // ================================================================
+        // I/O ポートハンドラ (PIT 8254, PIC 8259, KBC 8042, VGA, etc.)
+        // ================================================================
+        this._installIOPorts();
+        // ================================================================
+        // INT 13h: ディスクBIOS
+        // ================================================================
+        this.registerInterrupt(0x13, () => {
+            switch (this.reg.ah) {
+                case 0x00: // Reset disk
+                    this.reg.ah = 0;
+                    this.reg.setFlag(FLAGS.CF, false);
+                    break;
+                case 0x02: { // Read sectors
+                    // Stub: return success (data filled by disk system if available)
+                    this.reg.ah = 0;
+                    this.reg.al = this.reg.al; // sectors read = requested
+                    this.reg.setFlag(FLAGS.CF, false);
+                    break;
+                }
+                case 0x03: { // Write sectors
+                    this.reg.ah = 0;
+                    this.reg.setFlag(FLAGS.CF, false);
+                    break;
+                }
+                case 0x04: // Verify sectors
+                    this.reg.ah = 0;
+                    this.reg.setFlag(FLAGS.CF, false);
+                    break;
+                case 0x08: // Get drive parameters
+                    if (this.reg.dl === 0x00) { // Floppy A:
+                        this.reg.ah = 0;
+                        this.reg.bl = 0x04; // 1.44MB 3.5"
+                        this.reg.ch = 79; // max cylinder
+                        this.reg.cl = 18; // max sector
+                        this.reg.dh = 1;  // max head
+                        this.reg.dl = 1;  // number of drives
+                        this.reg.setFlag(FLAGS.CF, false);
+                    } else if (this.reg.dl === 0x80) { // Hard disk
+                        this.reg.ah = 0;
+                        this.reg.bl = 0;
+                        this.reg.ch = 0; this.reg.cl = 0;
+                        this.reg.dh = 0; this.reg.dl = 0;
+                        this.reg.setFlag(FLAGS.CF, true); // no hard disk
+                    } else {
+                        this.reg.ah = 0x01;
+                        this.reg.setFlag(FLAGS.CF, true);
+                    }
+                    break;
+                case 0x15: // Get disk type
+                    if (this.reg.dl === 0x00) {
+                        this.reg.ah = 0x02; // floppy with change line
+                        this.reg.setFlag(FLAGS.CF, false);
+                    } else {
+                        this.reg.ah = 0;
+                        this.reg.setFlag(FLAGS.CF, true);
+                    }
+                    break;
+                case 0x16: // Detect disk change
+                    this.reg.ah = 0; // no change
+                    this.reg.setFlag(FLAGS.CF, false);
+                    break;
+                default:
+                    this.reg.ah = 0x01; // invalid function
+                    this.reg.setFlag(FLAGS.CF, true);
+                    break;
+            }
+        });
+        // ================================================================
+        // INT 15h: System Services (Extended)
+        // ================================================================
+        this.registerInterrupt(0x15, () => {
+            switch (this.reg.ah) {
+                case 0x24: // A20 gate (stub: always enabled)
+                    this.reg.ah = 0;
+                    this.reg.setFlag(FLAGS.CF, false);
+                    break;
+                case 0x41: // Wait on external event (stub)
+                    break;
+                case 0x86: // Wait (CX:DX microseconds)
+                    // Stub: return immediately
+                    this.reg.setFlag(FLAGS.CF, false);
+                    break;
+                case 0x87: // Move block (protected mode) - stub
+                    this.reg.ah = 0;
+                    this.reg.setFlag(FLAGS.CF, false);
+                    break;
+                case 0x88: // Extended memory size (KB above 1MB)
+                    this.reg.ax = 0; // no extended memory
+                    this.reg.setFlag(FLAGS.CF, false);
+                    break;
+                case 0xC0: // Get system configuration
+                    this.reg.ah = 0x86; // not supported
+                    this.reg.setFlag(FLAGS.CF, true);
+                    break;
+                case 0xC1: // Get extended BIOS data area segment
+                    this.reg.es = 0x9FC0;
+                    this.reg.setFlag(FLAGS.CF, false);
+                    break;
+                default:
+                    this.reg.ah = 0x86;
+                    this.reg.setFlag(FLAGS.CF, true);
+                    break;
+            }
+        });
     }
+    // ================================================================
+    // Teletype output with ANSI.SYS emulation
+    // ================================================================
+    _ttyOut(ch) {
+        // ANSI state machine
+        if (this._ansiState === 1) { // Got ESC
+            if (ch === 0x5B) { this._ansiState = 2; this._ansiParams = ''; return; } // '['
+            this._ansiState = 0; // not CSI, fall through
+        }
+        if (this._ansiState === 2) { // In CSI sequence
+            if (ch >= 0x40 && ch <= 0x7E) { // Final byte
+                this._ansiExec(String.fromCharCode(ch), this._ansiParams);
+                this._ansiState = 0;
+            } else {
+                this._ansiParams += String.fromCharCode(ch);
+            }
+            return;
+        }
+        if (ch === 0x1B) { this._ansiState = 1; return; }
+        // Normal character output
+        if (ch === 0x07) return; // bell
+        if (ch === 0x08) { if (this.biosCursorCol > 0) this.biosCursorCol--; }
+        else if (ch === 0x0A) { this.biosCursorRow++; }
+        else if (ch === 0x0D) { this.biosCursorCol = 0; }
+        else if (ch === 0x09) { // tab
+            this.biosCursorCol = (this.biosCursorCol + 8) & ~7;
+            if (this.biosCursorCol >= 80) { this.biosCursorCol = 0; this.biosCursorRow++; }
+        }
+        else {
+            const addr = this.VRAM_BASE + (this.biosCursorRow * 80 + this.biosCursorCol) * 2;
+            this.mem.write8(addr, ch);
+            this.mem.write8(addr + 1, this._ansiAttr);
+            this.biosCursorCol++;
+        }
+        if (this.biosCursorCol >= 80) { this.biosCursorCol = 0; this.biosCursorRow++; }
+        if (this.biosCursorRow >= 25) {
+            for (let i = 0; i < 80 * 24; i++) this.mem.write16(this.VRAM_BASE + i * 2, this.mem.read16(this.VRAM_BASE + (i + 80) * 2));
+            for (let i = 0; i < 80; i++) this.mem.write16(this.VRAM_BASE + (24 * 80 + i) * 2, (this._ansiAttr << 8) | 0x20);
+            this.biosCursorRow = 24;
+        }
+        this.mem.write8(0x0450, this.biosCursorCol);
+        this.mem.write8(0x0451, this.biosCursorRow);
+        if (this.onBiosOutput) this.onBiosOutput(String.fromCharCode(ch));
+    }
+    _ansiExec(cmd, params) {
+        const nums = params.split(';').map(s => parseInt(s) || 0);
+        const n = nums[0] || 1;
+        switch (cmd) {
+            case 'H': case 'f': // Cursor position
+                this.biosCursorRow = Math.max(0, Math.min(24, (nums[0] || 1) - 1));
+                this.biosCursorCol = Math.max(0, Math.min(79, (nums[1] || 1) - 1));
+                break;
+            case 'A': this.biosCursorRow = Math.max(0, this.biosCursorRow - n); break; // Up
+            case 'B': this.biosCursorRow = Math.min(24, this.biosCursorRow + n); break; // Down
+            case 'C': this.biosCursorCol = Math.min(79, this.biosCursorCol + n); break; // Right
+            case 'D': this.biosCursorCol = Math.max(0, this.biosCursorCol - n); break; // Left
+            case 'J': // Erase screen
+                if (n === 2 || nums[0] === 2) {
+                    for (let i = 0; i < 80*25; i++) this.mem.write16(this.VRAM_BASE+i*2, (this._ansiAttr<<8)|0x20);
+                    this.biosCursorRow = 0; this.biosCursorCol = 0;
+                } else if (nums[0] === 0) { // Erase from cursor to end
+                    const start = this.biosCursorRow*80+this.biosCursorCol;
+                    for (let i = start; i < 80*25; i++) this.mem.write16(this.VRAM_BASE+i*2, (this._ansiAttr<<8)|0x20);
+                } else if (nums[0] === 1) { // Erase from start to cursor
+                    const end = this.biosCursorRow*80+this.biosCursorCol;
+                    for (let i = 0; i <= end; i++) this.mem.write16(this.VRAM_BASE+i*2, (this._ansiAttr<<8)|0x20);
+                }
+                break;
+            case 'K': // Erase in line
+                if (nums[0] === 0 || params === '') { // cursor to end of line
+                    for (let c = this.biosCursorCol; c < 80; c++) this.mem.write16(this.VRAM_BASE+(this.biosCursorRow*80+c)*2, (this._ansiAttr<<8)|0x20);
+                } else if (nums[0] === 1) { // start of line to cursor
+                    for (let c = 0; c <= this.biosCursorCol; c++) this.mem.write16(this.VRAM_BASE+(this.biosCursorRow*80+c)*2, (this._ansiAttr<<8)|0x20);
+                } else if (nums[0] === 2) { // entire line
+                    for (let c = 0; c < 80; c++) this.mem.write16(this.VRAM_BASE+(this.biosCursorRow*80+c)*2, (this._ansiAttr<<8)|0x20);
+                }
+                break;
+            case 'm': // Set graphic rendition (colors)
+                for (const p of nums) {
+                    if (p === 0) this._ansiAttr = 0x07; // reset
+                    else if (p === 1) this._ansiAttr |= 0x08; // bold/bright
+                    else if (p === 4) this._ansiAttr |= 0x01; // underline (blue fg)
+                    else if (p === 5) this._ansiAttr |= 0x80; // blink
+                    else if (p === 7) { // reverse
+                        const fg = this._ansiAttr & 0x0F, bg = (this._ansiAttr >> 4) & 0x07;
+                        this._ansiAttr = (fg << 4) | bg;
+                    }
+                    else if (p === 22) this._ansiAttr &= ~0x08; // normal intensity
+                    else if (p >= 30 && p <= 37) { // foreground
+                        const ansiToPC = [0,4,2,6,1,5,3,7];
+                        this._ansiAttr = (this._ansiAttr & 0xF8) | ansiToPC[p-30];
+                    }
+                    else if (p >= 40 && p <= 47) { // background
+                        const ansiToPC = [0,4,2,6,1,5,3,7];
+                        this._ansiAttr = (this._ansiAttr & 0x8F) | (ansiToPC[p-40] << 4);
+                    }
+                    else if (p >= 90 && p <= 97) { // bright foreground
+                        const ansiToPC = [0,4,2,6,1,5,3,7];
+                        this._ansiAttr = (this._ansiAttr & 0xF0) | ansiToPC[p-90] | 0x08;
+                    }
+                }
+                break;
+            case 's': // Save cursor position
+                this._ansiSavedRow = this.biosCursorRow;
+                this._ansiSavedCol = this.biosCursorCol;
+                break;
+            case 'u': // Restore cursor position
+                this.biosCursorRow = this._ansiSavedRow || 0;
+                this.biosCursorCol = this._ansiSavedCol || 0;
+                break;
+            case 'n': // Device status report
+                if (nums[0] === 6) { // Report cursor position
+                    const resp = `\x1B[${this.biosCursorRow+1};${this.biosCursorCol+1}R`;
+                    for (const c of resp) this.biosKeyBuffer.push(c.charCodeAt(0));
+                }
+                break;
+            case 'h': case 'l': // Set/Reset mode (stub)
+                break;
+            case 'L': // Insert lines
+                for (let i = 0; i < n; i++) {
+                    for (let r = 24; r > this.biosCursorRow; r--)
+                        for (let c = 0; c < 80; c++)
+                            this.mem.write16(this.VRAM_BASE+(r*80+c)*2, this.mem.read16(this.VRAM_BASE+((r-1)*80+c)*2));
+                    for (let c = 0; c < 80; c++) this.mem.write16(this.VRAM_BASE+(this.biosCursorRow*80+c)*2, (this._ansiAttr<<8)|0x20);
+                }
+                break;
+            case 'M': // Delete lines
+                for (let i = 0; i < n; i++) {
+                    for (let r = this.biosCursorRow; r < 24; r++)
+                        for (let c = 0; c < 80; c++)
+                            this.mem.write16(this.VRAM_BASE+(r*80+c)*2, this.mem.read16(this.VRAM_BASE+((r+1)*80+c)*2));
+                    for (let c = 0; c < 80; c++) this.mem.write16(this.VRAM_BASE+(24*80+c)*2, (this._ansiAttr<<8)|0x20);
+                }
+                break;
+        }
+        this.mem.write8(0x0450, this.biosCursorCol);
+        this.mem.write8(0x0451, this.biosCursorRow);
+    }
+    // ================================================================
+    // I/O ポートハンドラ登録
+    // ================================================================
+    _installIOPorts() {
+        // --- PIT 8254 Timer (ports 0x40-0x43) ---
+        this._pitCounters = [0xFFFF, 0xFFFF, 0xFFFF];
+        this._pitLatched  = [null, null, null];
+        this._pitMode     = [3, 0, 3]; // mode for each counter
+        this._pitReadHi   = [false, false, false];
+        this._pitWriteHi  = [false, false, false];
+        for (let ch = 0; ch < 3; ch++) {
+            const c = ch;
+            this.registerIOPort(0x40 + c,
+                () => { // read
+                    const v = this._pitLatched[c] !== null ? this._pitLatched[c] : this._pitCounters[c];
+                    if (this._pitReadHi[c]) {
+                        this._pitReadHi[c] = false;
+                        this._pitLatched[c] = null;
+                        return (v >> 8) & 0xFF;
+                    }
+                    this._pitReadHi[c] = true;
+                    return v & 0xFF;
+                },
+                (val) => { // write
+                    if (this._pitWriteHi[c]) {
+                        this._pitCounters[c] = (this._pitCounters[c] & 0xFF) | ((val & 0xFF) << 8);
+                        this._pitWriteHi[c] = false;
+                    } else {
+                        this._pitCounters[c] = (this._pitCounters[c] & 0xFF00) | (val & 0xFF);
+                        this._pitWriteHi[c] = true;
+                    }
+                }
+            );
+        }
+        // PIT control port 0x43
+        this.registerIOPort(0x43,
+            () => 0,
+            (val) => {
+                const ch = (val >> 6) & 3;
+                if (ch < 3) {
+                    const rl = (val >> 4) & 3;
+                    if (rl === 0) { // Counter latch
+                        this._pitLatched[ch] = this._pitCounters[ch];
+                        this._pitReadHi[ch] = false;
+                    } else {
+                        this._pitMode[ch] = (val >> 1) & 7;
+                        this._pitWriteHi[ch] = false;
+                        this._pitReadHi[ch] = false;
+                    }
+                }
+            }
+        );
+        // --- PIC 8259 (ports 0x20-0x21, 0xA0-0xA1) ---
+        this._picIMR = [0, 0]; // Interrupt Mask Register
+        this._picInService = [0, 0];
+        for (let i = 0; i < 2; i++) {
+            const base = i === 0 ? 0x20 : 0xA0;
+            const idx = i;
+            this.registerIOPort(base, // command
+                () => this._picInService[idx],
+                (val) => {
+                    if (val === 0x20) this._picInService[idx] = 0; // EOI
+                }
+            );
+            this.registerIOPort(base + 1, // data (IMR)
+                () => this._picIMR[idx],
+                (val) => { this._picIMR[idx] = val; }
+            );
+        }
+        // --- Keyboard Controller 8042 (ports 0x60-0x64) ---
+        this._kbcData = 0;
+        this._kbcStatus = 0; // bit0=output buffer full, bit1=input buffer full
+        this.registerIOPort(0x60,
+            () => { this._kbcStatus &= ~1; return this._kbcData; },
+            (val) => {} // write to 0x60 = data to keyboard
+        );
+        this.registerIOPort(0x61, // Port B (speaker, etc.)
+            () => 0, // bit5: timer2 output (for timing loops)
+            (val) => {} // speaker control - ignore
+        );
+        this.registerIOPort(0x64,
+            () => this._kbcStatus | 0x10, // bit4=keyboard not locked
+            (val) => {} // command port
+        );
+        // --- VGA Registers (ports 0x3B4-0x3DA) ---
+        this._vgaIndex = 0;
+        this._vgaCRTRegs = new Uint8Array(25);
+        // VGA CRT controller index (3D4)
+        this.registerIOPort(0x3D4,
+            () => this._vgaIndex,
+            (val) => { this._vgaIndex = val & 0x1F; }
+        );
+        // VGA CRT controller data (3D5)
+        this.registerIOPort(0x3D5,
+            () => this._vgaCRTRegs[this._vgaIndex] || 0,
+            (val) => { this._vgaCRTRegs[this._vgaIndex] = val; }
+        );
+        // VGA input status 1 (3DA) - important for vsync/retrace detection
+        this._vgaRetraceToggle = 0;
+        this.registerIOPort(0x3DA,
+            () => {
+                // Toggle retrace bits to prevent infinite polling loops
+                this._vgaRetraceToggle ^= 9; // toggle bits 0 (display) and 3 (vsync)
+                return this._vgaRetraceToggle;
+            },
+            (val) => {} // write resets attribute controller flip-flop
+        );
+        // VGA Attribute Controller (3C0/3C1)
+        this._vgaAttrFlipFlop = false;
+        this._vgaAttrIndex = 0;
+        this._vgaAttrRegs = new Uint8Array(32);
+        this.registerIOPort(0x3C0,
+            () => this._vgaAttrIndex,
+            (val) => {
+                if (!this._vgaAttrFlipFlop) this._vgaAttrIndex = val & 0x1F;
+                else this._vgaAttrRegs[this._vgaAttrIndex] = val;
+                this._vgaAttrFlipFlop = !this._vgaAttrFlipFlop;
+            }
+        );
+        this.registerIOPort(0x3C1,
+            () => this._vgaAttrRegs[this._vgaAttrIndex] || 0,
+            (val) => {}
+        );
+        // VGA Sequencer (3C4/3C5)
+        this._vgaSeqIndex = 0;
+        this._vgaSeqRegs = new Uint8Array(8);
+        this.registerIOPort(0x3C4, () => this._vgaSeqIndex, (val) => { this._vgaSeqIndex = val & 7; });
+        this.registerIOPort(0x3C5, () => this._vgaSeqRegs[this._vgaSeqIndex] || 0, (val) => { this._vgaSeqRegs[this._vgaSeqIndex] = val; });
+        // VGA Graphics Controller (3CE/3CF)
+        this._vgaGCIndex = 0;
+        this._vgaGCRegs = new Uint8Array(16);
+        this.registerIOPort(0x3CE, () => this._vgaGCIndex, (val) => { this._vgaGCIndex = val & 0xF; });
+        this.registerIOPort(0x3CF, () => this._vgaGCRegs[this._vgaGCIndex] || 0, (val) => { this._vgaGCRegs[this._vgaGCIndex] = val; });
+        // VGA DAC (3C6-3C9) for palette
+        this._vgaDACWriteIndex = 0;
+        this._vgaDACReadIndex = 0;
+        this._vgaDACState = 0; // 0-2 for R,G,B cycle
+        this._vgaPalette = new Uint8Array(768); // 256 colors × 3 (R,G,B)
+        // Initialize default VGA palette (standard 16 colors + grayscale)
+        const defPal = [
+            [0,0,0],[0,0,42],[0,42,0],[0,42,42],[42,0,0],[42,0,42],[42,21,0],[42,42,42],
+            [21,21,21],[21,21,63],[21,63,21],[21,63,63],[63,21,21],[63,21,63],[63,63,21],[63,63,63]
+        ];
+        for (let i = 0; i < 16; i++) {
+            this._vgaPalette[i*3] = defPal[i][0]; this._vgaPalette[i*3+1] = defPal[i][1]; this._vgaPalette[i*3+2] = defPal[i][2];
+        }
+        for (let i = 16; i < 256; i++) {
+            const g = Math.round(i * 63 / 255);
+            this._vgaPalette[i*3] = g; this._vgaPalette[i*3+1] = g; this._vgaPalette[i*3+2] = g;
+        }
+        this.registerIOPort(0x3C6, () => 0xFF, (val) => {}); // DAC mask
+        this.registerIOPort(0x3C7, () => 0, (val) => { this._vgaDACReadIndex = val; this._vgaDACState = 0; }); // DAC read index
+        this.registerIOPort(0x3C8, () => 0, (val) => { this._vgaDACWriteIndex = val; this._vgaDACState = 0; }); // DAC write index
+        this.registerIOPort(0x3C9,
+            () => { // DAC data read
+                const idx = this._vgaDACReadIndex * 3 + this._vgaDACState;
+                const v = this._vgaPalette[idx] || 0;
+                this._vgaDACState++;
+                if (this._vgaDACState >= 3) { this._vgaDACState = 0; this._vgaDACReadIndex = (this._vgaDACReadIndex + 1) & 0xFF; }
+                return v;
+            },
+            (val) => { // DAC data write
+                this._vgaPalette[this._vgaDACWriteIndex * 3 + this._vgaDACState] = val & 0x3F;
+                this._vgaDACState++;
+                if (this._vgaDACState >= 3) { this._vgaDACState = 0; this._vgaDACWriteIndex = (this._vgaDACWriteIndex + 1) & 0xFF; }
+            }
+        );
+        // VGA Misc output register (3C2/3CC)
+        this._vgaMiscOutput = 0x63; // default: color mode, clock select
+        this.registerIOPort(0x3C2, () => this._vgaMiscOutput, (val) => { this._vgaMiscOutput = val; }); // write
+        this.registerIOPort(0x3CC, () => this._vgaMiscOutput, (val) => {}); // read
+        // --- CMOS RTC (ports 0x70-0x71) ---
+        this._cmosIndex = 0;
+        this.registerIOPort(0x70, () => this._cmosIndex, (val) => { this._cmosIndex = val & 0x7F; });
+        this.registerIOPort(0x71,
+            () => {
+                const d = new Date();
+                switch (this._cmosIndex) {
+                    case 0x00: return this._toBCD(d.getSeconds());
+                    case 0x02: return this._toBCD(d.getMinutes());
+                    case 0x04: return this._toBCD(d.getHours());
+                    case 0x06: return d.getDay() + 1;
+                    case 0x07: return this._toBCD(d.getDate());
+                    case 0x08: return this._toBCD(d.getMonth() + 1);
+                    case 0x09: return this._toBCD(d.getFullYear() % 100);
+                    case 0x0A: return 0x26; // divider + rate
+                    case 0x0B: return 0x02; // 24h mode, BCD
+                    case 0x0C: return 0x00; // interrupt flags
+                    case 0x0D: return 0x80; // battery OK
+                    case 0x0E: return 0x00; // diagnostic status
+                    case 0x0F: return 0x00; // shutdown status
+                    case 0x10: return 0x44; // floppy types (2x 1.44MB)
+                    case 0x14: return 0x0D; // equipment byte
+                    case 0x15: return 0x80; // base memory low (640K)
+                    case 0x16: return 0x02; // base memory high
+                    case 0x32: return this._toBCD(Math.floor(d.getFullYear() / 100));
+                    default: return 0;
+                }
+            },
+            (val) => {} // CMOS writes - ignore
+        );
+        // --- DMA Controller (0x00-0x0F, 0x80-0x8F) - stub ---
+        for (let p = 0; p <= 0x0F; p++) {
+            this.registerIOPort(p, () => 0, (val) => {});
+        }
+        for (let p = 0x80; p <= 0x8F; p++) {
+            this.registerIOPort(p, () => 0, (val) => {});
+        }
+        // --- Game port (0x201) ---
+        this.registerIOPort(0x201, () => 0xFF, (val) => {}); // no joystick
+    }
+    _toBCD(v) { return ((Math.floor(v / 10) & 0xF) << 4) | (v % 10); }
     // ================================================================
     // デバッグ: レジスタダンプ
     // ================================================================
