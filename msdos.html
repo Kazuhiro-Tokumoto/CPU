@@ -510,7 +510,11 @@ window.addEventListener('DOMContentLoaded', ()=>{
 
   // exitVRAMMode (テキストモード復帰)
   window.exitVRAMMode=()=>{
-    if(window._gfxMode) exitGFXMode();
+    window._gfxMode = false;
+    gfxCanvas.style.display='none';
+    document.getElementById('screen').style.visibility='visible';
+    document.getElementById('gfxBadge').style.display='none';
+    document.getElementById('videoModeSpan').textContent='';
     const st=document.getElementById('screenText');
     if(st)st.textContent=bufText;
     screenEl.scrollTop=screenEl.scrollHeight;
