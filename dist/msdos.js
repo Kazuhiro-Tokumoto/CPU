@@ -1788,6 +1788,7 @@ class DOSShell {
           cpu.step(); ran++;
           if (performance.now() - t0 > 14) break;
         }
+        if (ran > 1) this._hltCount = 0; // Real work done, reset HLT counter
         // Timer IRQ simulation
         timerAccum += ran;
         if (timerAccum >= TIMER_INTERVAL) {
@@ -1818,6 +1819,20 @@ class DOSShell {
           if (reason === 'key_wait') { /* continue, wait for key */ }
           else if (reason === 'hlt') {
             // HLT = wait for next interrupt, auto-resume on next frame
+            // But detect repeated HLTs (e.g. program forgot INT 21h/4Ch after HLT)
+            if (!this._hltCount) this._hltCount = 0;
+            this._hltCount++;
+            if (this._hltCount > 120) { // ~2 seconds of nothing but HLTs → treat as exit
+              this._hltCount = 0;
+              window._cpuRunning = false;
+              window._cpuInstance = null;
+              window._cpuMem = null;
+              if (window.exitVRAMMode) window.exitVRAMMode();
+              term.println('');
+              shell.prompt();
+              if (window.onDiskChange) window.onDiskChange();
+              return;
+            }
             cpu.halted = false;
             cpu.haltReason = '';
           }
